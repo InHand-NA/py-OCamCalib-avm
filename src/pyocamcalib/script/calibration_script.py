@@ -52,7 +52,7 @@ def main(working_dir: str,
         my_calib_engine.load_detection(corners_path)
 
     my_calib_engine.estimate_fisheye_parameters()
-    my_calib_engine.find_poly_inv()
+    my_calib_engine.find_poly_inv(max_degree_inverse_poly=16)
     my_calib_engine.save_calibration()
     my_calib_engine.show_model_projection()
     my_calib_engine.show_reprojection_error()

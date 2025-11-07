@@ -1,0 +1,120 @@
+test_images/fish_1/Fisheye1_1.jpg:
+translation (mm)
+  -3.27404107        # trans_x
+  3.6744791        # trans_y
+  3.19632356        # trans_z
+rotation (degree)
+  -2.24123631        # roll
+  4.84276092        # pitch
+  -94.003235        # yaw
+
+test_images/fish_1/Fisheye1_11.jpg:
+translation (mm)
+  -2.53047406        # trans_x
+  -1.35037989        # trans_y
+  3.93715491        # trans_z
+rotation (degree)
+  -16.3625537        # roll
+  8.00391159        # pitch
+  6.44895751        # yaw
+
+test_images/fish_1/Fisheye1_12.jpg:
+translation (mm)
+  1.08156057        # trans_x
+  -2.4134139        # trans_y
+  5.25103404        # trans_z
+rotation (degree)
+  -10.8278566        # roll
+  29.028985        # pitch
+  26.0264266        # yaw
+
+test_images/fish_1/Fisheye1_13.jpg:
+translation (mm)
+  -0.617049362        # trans_x
+  -5.26907892        # trans_y
+  6.2188582        # trans_z
+rotation (degree)
+  48.1061324        # roll
+  45.4118142        # pitch
+  35.7356962        # yaw
+
+test_images/fish_1/Fisheye1_14.jpg:
+translation (mm)
+  3.02666812        # trans_x
+  1.5348938        # trans_y
+  7.01591799        # trans_z
+rotation (degree)
+  -37.9395532        # roll
+  25.0588175        # pitch
+  175.022161        # yaw
+
+test_images/fish_1/Fisheye1_15.jpg:
+translation (mm)
+  -6.80584603        # trans_x
+  -0.879881665        # trans_y
+  2.32249656        # trans_z
+rotation (degree)
+  -8.86411938        # roll
+  -23.4145428        # pitch
+  -18.6777076        # yaw
+
+test_images/fish_1/Fisheye1_2.jpg:
+translation (mm)
+  0.385695488        # trans_x
+  -3.4264829        # trans_y
+  2.84921791        # trans_z
+rotation (degree)
+  17.6675258        # roll
+  -2.57584505        # pitch
+  86.6759853        # yaw
+
+test_images/fish_1/Fisheye1_5.jpg:
+translation (mm)
+  3.88955372        # trans_x
+  3.95473606        # trans_y
+  1.09407358        # trans_z
+rotation (degree)
+  -0.818745621        # roll
+  -30.3974272        # pitch
+  -170.761646        # yaw
+
+test_images/fish_1/Fisheye1_6.jpg:
+translation (mm)
+  1.66056895        # trans_x
+  2.8661508        # trans_y
+  5.31719723        # trans_z
+rotation (degree)
+  -47.4412335        # roll
+  3.01707706        # pitch
+  -99.7684412        # yaw
+
+test_images/fish_1/Fisheye1_7.jpg:
+translation (mm)
+  5.60526698        # trans_x
+  -2.17047814        # trans_y
+  2.30182927        # trans_z
+rotation (degree)
+  56.3066715        # roll
+  12.8340914        # pitch
+  101.4641        # yaw
+
+test_images/fish_1/Fisheye1_8.jpg:
+translation (mm)
+  -0.602869828        # trans_x
+  -3.75288923        # trans_y
+  3.91810307        # trans_z
+rotation (degree)
+  -41.1048503        # roll
+  -6.33564773        # pitch
+  80.9067969        # yaw
+
+test_images/fish_1/Fisheye1_9.jpg:
+translation (mm)
+  -0.432997309        # trans_x
+  -4.74563271        # trans_y
+  4.04227605        # trans_z
+rotation (degree)
+  -43.6644613        # roll
+  -4.36150409        # pitch
+  80.5080576        # yaw
+
