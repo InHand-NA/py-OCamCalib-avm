@@ -50,7 +50,11 @@ def main(fisheye_image_path: str,
     plt.figure()
     plt.imshow(perspective_image[:, :, ::-1])
     plt.title(f'Perspective conversion. fov = {perspective_fov} deg')
+    img_file = f'./docs/Perspective_fov{perspective_fov}_{perspective_sensor_size[1]}_{perspective_sensor_size[0]}.jpg'
+    plt.savefig(img_file, dpi=300)
     plt.show()
+
+    print(f"Image is saved at: {img_file}")
 
 
 if __name__ == "__main__":

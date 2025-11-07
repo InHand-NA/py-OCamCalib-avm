@@ -160,7 +160,7 @@ That why I prefer to talk about Image projection CONVERSION than "UNDISTORTION" 
 </p>
 
 ```commandline
-python projection_conversion_script.py ../../../test_images/fish_1/Fisheye1_1.jpg ../checkpoints/calibration/calibration_fisheye_1_18052022_154907.json 80 700 700
+python src/pyocamcalib/script/projection_conversion_script.py ./test_images/fish_1/Fisheye1_12.jpg ./src/pyocamcalib/checkpoints/calibration/calibration_fisheye_1_07112025_133715.json 160 720 1280
 ```
 
 
