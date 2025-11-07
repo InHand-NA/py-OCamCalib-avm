@@ -121,8 +121,8 @@ def main(
     image_path: Path = typer.Argument(..., help="Path to the chessboard image."),
     chessboard_size_row: int = typer.Option(8, help="Number of inner corners along a row."),
     chessboard_size_column: int = typer.Option(6, help="Number of inner corners along a column."),
-    square_size: float = typer.Option(1.0, help="Size of a chessboard square (units carry over to translation)."),
-    axis_length: float = typer.Option(3.0, help="Axis length expressed in number of squares to draw."),
+    square_size: float = typer.Option(32.5, help="Size of a chessboard square (units carry over to translation)."),
+    axis_length: float = typer.Option(65.0, help="Axis length expressed in number of squares to draw."),
     output_path: Optional[Path] = typer.Option('./outputs/', help="Optional path to save the overlay image."),
 ):
     if not calibration_file.is_file():
@@ -142,6 +142,12 @@ def main(
     pattern_size = (chessboard_size_row, chessboard_size_column)
     image_points = _detect_corners(image, pattern_size)
     world_points = generate_checkerboard_points(pattern_size, square_size, z_axis=True)
+    typer.echo("Detected corner coordinates (pixel -> world):")
+    for idx, (pixel, world) in enumerate(zip(image_points, world_points), start=1):
+        typer.echo(
+            f"{idx:03d}: pixel=({pixel[0]:.3f}, {pixel[1]:.3f}) "
+            f"world=({world[0]:.3f}, {world[1]:.3f}, {world[2]:.3f})"
+        )
 
     extrinsic, rms = _estimate_extrinsic(camera, image_points, world_points, image.shape[:2])
     rotation = extrinsic[:, :3]
