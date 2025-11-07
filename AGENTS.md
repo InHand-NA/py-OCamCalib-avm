@@ -6,13 +6,18 @@
 - Generated checkpoints live under `src/pyocamcalib/checkpoints/`, `test_images/` supplies regression chessboards, and `docs/` stores explanatory figures.
 
 ## Build, Test, and Development Commands
+
+### Setup venv, do only one time
 ```bash
-conda env create --file environment.yml && conda activate py-OCamCalib
-pip install -e .
-python src/pyocamcalib/script/calibration_script.py test_images/fish_1 8 6 --camera-name demo --check
-python src/pyocamcalib/script/projection_conversion_script.py test_images/fish_1/Fisheye1_1.jpg src/pyocamcalib/checkpoints/calibration/example.json 80 700 700
-pytest
+# for virtualenv user 
+python3 -m venv env
+source env/bin/activate
+pip install -r requirements.txt
+
+source env/bin/activate
+
 ```
+
 Prefer Typer flags so `--help` stays authoritative; avoid environment-variable-only toggles.
 
 ## Coding Style & Naming Conventions

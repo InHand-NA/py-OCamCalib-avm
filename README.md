@@ -31,6 +31,8 @@ conda activate py-OCamCalib
 python3 -m venv env
 source env/bin/activate
 pip install -r requirements.txt
+
+export PYTHONPATH="$PWD/src:${PYTHONPATH}"
 ```
 
 ## Example
@@ -38,8 +40,8 @@ pip install -r requirements.txt
 You can use it to test the project.
 
 ### Use case 1 : Automatic detection and no check 
-```commandline
-python calibration_script.py ./../../test_images/fish_1 8 6  --camera-name fisheye_1
+```bash
+(env) zyb@zyb-Alienware-18-Area-51-AA18250:~/avm/py-OCamCalib$ python ./src/pyocamcalib/script/calibration_script.py ./test_images/fish_1 8 6  --camera-name fisheye_1
 ```
 
 ### Use case 2 : Automatic detection and check 
