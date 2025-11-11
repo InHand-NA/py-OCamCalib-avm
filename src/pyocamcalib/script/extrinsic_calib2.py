@@ -110,6 +110,8 @@ class ExtCalibrationEngine:
         self.detections = {}
         self.image_points = None
         self.world_points = None
+        self.image = None
+        self.image_path = None
         self.distortion_center_linear = None
         self.extrinsics_t = None
         self.taylor_coefficient = None
@@ -120,9 +122,11 @@ class ExtCalibrationEngine:
         pass
 
 
-    def generate_checkerboard_points(self, z_axis=True):
-        # get 3D checkerboard points
-        pass
+    def generate_checkerboard_points(self, z_axis: bool = True) -> np.ndarray:
+        """生成棋盘格世界坐标并缓存。"""
+        pts = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=z_axis)
+        self.world_points = np.squeeze(pts)
+        return self.world_points
 
 
     def detect_corners(self, images_file_path, check: bool = False, max_height: int = 520):
@@ -134,7 +138,8 @@ class ExtCalibrationEngine:
 
         for img_f in tqdm(sorted(images_path)):
             print(f"detect on image: {img_f}")
-            img = cv.imread(str(img_f))
+            self.image_path = str(img_f)
+            img = cv.imread(self.image_path)
             height, width = img.shape[:2]
             ratio = width / height
             img_resize = cv.resize(img, (round(ratio * max_height), max_height))
@@ -168,19 +173,79 @@ class ExtCalibrationEngine:
                     if check:
                         check_detection(np.squeeze(corners), img)
                     count += 1
-                    self.detections[str(img_f)] = {"image_points": np.squeeze(corners)[::-1],
-                                                   "world_points": np.squeeze(world_points)}
+                    self.detections[self.image_path] = {"image_points": np.squeeze(corners)[::-1],
+                                                        "world_points": np.squeeze(world_points)}
                     self.image_points = np.squeeze(corners)[::-1]
                     self.world_points = np.squeeze(world_points)
+                    self.image = img
                     break
 
         logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
 
-    def extract_extrinsic(self, ocam, visualize=True):
-        pass
+    def extract_extrinsic(self, camera: Camera) -> Tuple[np.ndarray, float]:
+        """估计外参 [R|t] 并返回最小重投影误差 (像素)。"""
+        if self.image is None or self.image_points is None or self.world_points is None:
+            raise RuntimeError("Corners/world points not available. Run detect_corners first.")
 
-    def visualize(self):
-        pass
+        img_size = self.image.shape[:2]
+        # 使用 x,y 平面点进行线性初值
+        world_xy = self.world_points[:, :2]
+        r_part, t_part = partial_extrinsics(self.image_points, world_xy, img_size, camera.distortion_center)
+
+        # 构建候选并选择最小 RMS 的解
+        candidates = get_full_rotation_matrix(r_part, t_part, self.image_points, img_size, camera.distortion_center)
+        errors = []
+        extrinsics = []
+        for cand in candidates:
+            Rt = np.hstack([cand[:, :3], cand[:, 3].reshape(3, 1)])
+            extrinsics.append(Rt)
+            # 用完整 3D 点做重投影评估
+            err = np.linalg.norm(camera.world2cam(self.world_points, Rt) - self.image_points, axis=1).mean()
+            errors.append(err)
+
+        idx = int(np.argmin(errors))
+        self.extrinsics_t = extrinsics[idx]
+        return self.extrinsics_t, float(errors[idx])
+
+    def visualize(self, camera: Camera, axis_length: float = 65.0) -> np.ndarray:
+        if self.image is None or self.extrinsics_t is None:
+            raise RuntimeError("Extrinsics not available. Run extract_extrinsic first.")
+        overlay = _draw_axes(self.image, camera, self.extrinsics_t, self.square_size, axis_length)
+        overlay = _draw_detected_corners(overlay, self.image_points)
+        return overlay
+
+
+def _draw_axes(image: np.ndarray,
+               camera: Camera,
+               extrinsic: np.ndarray,
+               square_size: float,
+               axis_length: float) -> np.ndarray:
+    """Draw the chessboard origin plus X/Y axes on the image."""
+    overlay = image.copy()
+    axis_extent = square_size * axis_length
+    axis_points = np.array([
+        [0.0, 0.0, 0.0],
+        [axis_extent, 0.0, 0.0],
+        [0.0, axis_extent, 0.0],
+    ])
+    projected = np.round(camera.world2cam(axis_points, extrinsic)).astype(int)
+    origin = tuple(projected[0])
+    x_axis = tuple(projected[1])
+    y_axis = tuple(projected[2])
+    cv.circle(overlay, origin, 6, (0, 0, 255), -1)
+    cv.line(overlay, origin, x_axis, (0, 0, 255), 2)
+    cv.line(overlay, origin, y_axis, (0, 255, 0), 2)
+    cv.putText(overlay, "X", (x_axis[0] + 5, x_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv.LINE_AA)
+    cv.putText(overlay, "Y", (y_axis[0] + 5, y_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
+    return overlay
+
+
+def _draw_detected_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    overlay = image.copy()
+    points = np.round(corners).astype(int)
+    for point in points:
+        cv.circle(overlay, (int(point[0]), int(point[1])), 3, (255, 0, 0), -1)
+    return overlay
 
 """
 python src/pyocamcalib/script/extrinsic_calib2.py ./src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_10112025_113611.json ./test_images/inhandus_1/fe1_3.jpg 
@@ -216,7 +281,41 @@ def main(
     chessboard_size = (chessboard_size_row, chessboard_size_column)
     my_calib_engine = ExtCalibrationEngine(working_dir, chessboard_size, camera_name, square_size)
     my_calib_engine.detect_corners(image_path, check=True, max_height=520)
-    pass
+
+    # 估计外参
+    extrinsic, rms = my_calib_engine.extract_extrinsic(camera)
+    R = extrinsic[:, :3]
+    t = extrinsic[:, 3]
+
+    # 角度输出
+    def _rotation_matrix_to_euler(rotation: np.ndarray) -> np.ndarray:
+        sy = np.sqrt(rotation[0, 0] ** 2 + rotation[1, 0] ** 2)
+        singular = sy < 1e-9
+        if not singular:
+            roll = np.arctan2(rotation[2, 1], rotation[2, 2])
+            pitch = np.arctan2(-rotation[2, 0], sy)
+            yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
+        else:
+            roll = np.arctan2(-rotation[1, 2], rotation[1, 1])
+            pitch = np.arctan2(-rotation[2, 0], sy)
+            yaw = 0.0
+        return np.degrees([roll, pitch, yaw])
+
+    roll, pitch, yaw = _rotation_matrix_to_euler(R)
+
+    typer.echo("Extrinsic matrix [R|t]:")
+    with np.printoptions(precision=6, suppress=True):
+        typer.echo(extrinsic)
+    typer.echo(f"Translation (units={square_size}): x={t[0]:.6f}, y={t[1]:.6f}, z={t[2]:.6f}")
+    typer.echo(f"Orientation (deg): roll={roll:.3f}, pitch={pitch:.3f}, yaw={yaw:.3f}")
+    typer.echo(f"Reprojection RMS error: {rms:.4f} px")
+
+    # 可视化并保存
+    overlay = my_calib_engine.visualize(camera, axis_length=axis_length)
+    output_file_path = Path(output_path) / f"{image_path.stem}_axes.jpg"
+    output_file_path.parent.mkdir(parents=True, exist_ok=True)
+    cv.imwrite(str(output_file_path), overlay)
+    typer.echo(f"Overlay saved to: {output_file_path}")
 
 
 if __name__ == "__main__":
