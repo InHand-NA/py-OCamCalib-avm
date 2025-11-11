@@ -1,0 +1,100 @@
+test_images/inhandus_1/IMG_20251110_081944.jpg:
+translation (mm)
+  3.71497479        # trans_x
+  5.02945375        # trans_y
+  2.68419196        # trans_z
+rotation (degree)
+  -9.79549775        # roll
+  -17.1806313        # pitch
+  -166.738276        # yaw
+
+test_images/inhandus_1/IMG_20251110_081955.jpg:
+translation (mm)
+  0.837543724        # trans_x
+  5.45044324        # trans_y
+  3.90908065        # trans_z
+rotation (degree)
+  -9.56387097        # roll
+  8.36925907        # pitch
+  -146.545256        # yaw
+
+test_images/inhandus_1/IMG_20251110_082005.jpg:
+translation (mm)
+  5.48268106        # trans_x
+  2.45600611        # trans_y
+  3.19864423        # trans_z
+rotation (degree)
+  -17.401769        # roll
+  -7.76639843        # pitch
+  166.165016        # yaw
+
+test_images/inhandus_1/IMG_20251110_082018.jpg:
+translation (mm)
+  -0.428093581        # trans_x
+  -2.00948867        # trans_y
+  2.62405616        # trans_z
+rotation (degree)
+  12.4857396        # roll
+  -6.90676983        # pitch
+  26.6602493        # yaw
+
+test_images/inhandus_1/IMG_20251110_082024.jpg:
+translation (mm)
+  -2.56145028        # trans_x
+  -1.21336603        # trans_y
+  1.99872659        # trans_z
+rotation (degree)
+  46.389492        # roll
+  -0.327811371        # pitch
+  2.61261035        # yaw
+
+test_images/inhandus_1/IMG_20251110_082051.jpg:
+translation (mm)
+  -0.856505526        # trans_x
+  -2.14925414        # trans_y
+  3.09443613        # trans_z
+rotation (degree)
+  44.4419799        # roll
+  25.9246558        # pitch
+  0.600221455        # yaw
+
+test_images/inhandus_1/IMG_20251110_082114.jpg:
+translation (mm)
+  4.53615732        # trans_x
+  -0.893435873        # trans_y
+  6.84181861        # trans_z
+rotation (degree)
+  -52.9155591        # roll
+  12.0918448        # pitch
+  152.452974        # yaw
+
+test_images/inhandus_1/IMG_20251110_082139.jpg:
+translation (mm)
+  4.73518787        # trans_x
+  1.08400525        # trans_y
+  5.00821607        # trans_z
+rotation (degree)
+  -43.9263055        # roll
+  -18.9357474        # pitch
+  -177.343649        # yaw
+
+test_images/inhandus_1/IMG_20251110_082220.jpg:
+translation (mm)
+  -0.746403002        # trans_x
+  -6.98153907        # trans_y
+  5.46027179        # trans_z
+rotation (degree)
+  0.883235277        # roll
+  27.0283636        # pitch
+  22.8579962        # yaw
+
+test_images/inhandus_1/IMG_20251110_082356.jpg:
+translation (mm)
+  -2.62404196        # trans_x
+  -2.78814479        # trans_y
+  4.10637672        # trans_z
+rotation (degree)
+  6.52162482        # roll
+  -0.576658823        # pitch
+  3.45706053        # yaw
+

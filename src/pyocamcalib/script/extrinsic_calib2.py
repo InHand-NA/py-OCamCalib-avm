@@ -296,6 +296,95 @@ class ExtCalibrationEngine:
         rms = float(np.linalg.norm(reproj - self.image_points, axis=1).mean())
         return Rt, rms
 
+    def extract_extrinsic_ippe(self,
+                               camera: Camera,
+                               depth_prior: Optional[float] = None,
+                               depth_weight: float = 0.0,
+                               mz_threshold: float = 0.0) -> Tuple[np.ndarray, float]:
+        """方法3：IPPE 多解 + OCam 像素域打分 + OCam-LM 细化。
+
+        - 将像素角点映射为单位视线，形成针孔归一化坐标；
+        - 使用 solvePnPGeneric(IPPE) 输出多个候选位姿；
+        - 用 OCam 模型在像素域评分选最优；
+        - 在像素域做一次 LM 细化（可选弱深度先验）。
+        """
+        if self.image_points is None or self.world_points is None:
+            raise RuntimeError("Corners/world points not available. Run detect_corners first.")
+
+        # 1) 像素 -> 单位视线 -> 针孔归一化坐标
+        bearings = camera.cam2world(self.image_points.copy())  # (N,3)
+        if mz_threshold > 0.0:
+            mask = bearings[:, 2] > mz_threshold
+            if mask.sum() < 6:
+                mask = np.ones(len(bearings), dtype=bool)
+        else:
+            mask = np.ones(len(bearings), dtype=bool)
+
+        uv_norm = np.column_stack([
+            bearings[mask, 0] / bearings[mask, 2],
+            bearings[mask, 1] / bearings[mask, 2],
+        ]).astype(np.float64)
+        Pw = self.world_points[mask].astype(np.float64)
+
+        # 2) IPPE 多解
+        try:
+            ok, rvecs, tvecs, _ = cv.solvePnPGeneric(
+                Pw, uv_norm, np.eye(3, dtype=np.float64), None, flags=cv.SOLVEPNP_IPPE
+            )
+        except TypeError:
+            # 某些 OpenCV 版本不返回第四项
+            ok, rvecs, tvecs = cv.solvePnPGeneric(
+                Pw, uv_norm, np.eye(3, dtype=np.float64), None, flags=cv.SOLVEPNP_IPPE
+            )
+        if not ok or len(rvecs) == 0:
+            raise RuntimeError("solvePnPGeneric(IPPE) failed to produce candidates")
+
+        # 3) 用 OCam 模型在像素域评分
+        cands = []
+        for rvec, tvec in zip(rvecs, tvecs):
+            R, _ = cv.Rodrigues(rvec)
+            Rt = np.hstack([R, tvec.reshape(3, 1)])
+            reproj = camera.world2cam(self.world_points, Rt)
+            rms = float(np.linalg.norm(reproj - self.image_points, axis=1).mean())
+            cands.append((Rt, rms))
+
+        Rt0, _ = min(cands, key=lambda x: x[1])
+
+        # 4) OCam-LM 细化（与方法1一致），含可选弱深度先验
+        def _resid(params: np.ndarray) -> np.ndarray:
+            rv = params[:3]
+            tv = params[3:6]
+            Rm, _ = cv.Rodrigues(rv)
+            Rt = np.hstack([Rm, tv.reshape(3, 1)])
+            proj = camera.world2cam(self.world_points, Rt)
+            res = (proj - self.image_points).ravel()
+            if depth_prior is not None and depth_weight > 0.0 and self.square_size > 0:
+                tz_norm = tv[2] / float(self.square_size)
+                z0_norm = float(depth_prior) / float(self.square_size)
+                # 将先验按点数缩放，便于权重在不同N下保持可比性
+                scale = np.sqrt(depth_weight * max(1, 2 * len(self.world_points)))
+                prior_res = scale * (tz_norm - z0_norm)
+                res = np.hstack([res, prior_res])
+            return res
+
+        R0, t0 = Rt0[:, :3], Rt0[:, 3]
+        rvec0, _ = cv.Rodrigues(R0)
+        tvec0 = t0.astype(np.float64).copy()
+        if depth_prior is not None:
+            tvec0[2] = float(depth_prior)
+        elif abs(tvec0[2]) < 1e-6:
+            t_xy = float(np.linalg.norm(tvec0[:2]))
+            tvec0[2] = max(1.0, 0.5 * t_xy)
+
+        x0 = np.hstack([rvec0.ravel(), tvec0.ravel()])
+        res = least_squares(_resid, x0, method="lm", max_nfev=200, xtol=1e-10, ftol=1e-10, gtol=1e-10)
+        rvec = res.x[:3]
+        tvec = res.x[3:6]
+        Rm, _ = cv.Rodrigues(rvec)
+        Rt_ref = np.hstack([Rm, tvec.reshape(3, 1)])
+        rms = float(np.linalg.norm(camera.world2cam(self.world_points, Rt_ref) - self.image_points, axis=1).mean())
+        return Rt_ref, rms
+
 
 def _draw_axes(image: np.ndarray,
                camera: Camera,
@@ -342,8 +431,8 @@ def main(
     square_size: float = typer.Option(200.0, help="Size of a chessboard square (units carry over to translation)."),
     axis_length: float = typer.Option(65.0, help="Axis length expressed in number of squares to draw."),
     output_path: Optional[Path] = typer.Option('./outputs/', help="Optional path to save the overlay image."),
-    depth_prior: Optional[float] = typer.Option(None, help="Optional weak prior for tz (same units as square_size)."),
-    depth_weight: float = typer.Option(0.0, help="Weak prior weight; 0 disables (suggest 0.1–2.0)."),
+    depth_prior: Optional[float] = typer.Option(1200.0, help="Optional weak prior for tz (same units as square_size)."),
+    depth_weight: float = typer.Option(200.0, help="Weak prior weight; 0 disables (suggest 0.1–2.0)."),
 ):
     if not calibration_file.is_file():
         raise typer.BadParameter(f"Calibration file not found: {calibration_file}")
@@ -399,14 +488,45 @@ def main(
     typer.echo(f"rpy1 (deg): roll={roll1:.3f}, pitch={pitch1:.3f}, yaw={yaw1:.3f}")
     typer.echo(f"RMS1: {rms_1:.4f} px")
 
+    # 方法3：IPPE 多解 + OCam 像素域打分 + OCam-LM 细化
+    extrinsic_3, rms_3 = my_calib_engine.extract_extrinsic_ippe(
+        camera,
+        depth_prior=depth_prior,
+        depth_weight=depth_weight,
+        mz_threshold=0.0,
+    )
+    R3 = extrinsic_3[:, :3]
+    t3 = extrinsic_3[:, 3]
+    roll3, pitch3, yaw3 = _rotation_matrix_to_euler(R3)
+
+    typer.echo("\nMethod 3: [R|t] (IPPE + OCam refine)")
+    with np.printoptions(precision=6, suppress=True):
+        typer.echo(extrinsic_3)
+    typer.echo(f"t3 (units={square_size}): x={t3[0]:.6f}, y={t3[1]:.6f}, z={t3[2]:.6f}")
+    typer.echo(f"rpy3 (deg): roll={roll3:.3f}, pitch={pitch3:.3f}, yaw={yaw3:.3f}")
+    typer.echo(f"RMS3: {rms_3:.4f} px")
+
+    # 差异指标（方法1 vs 方法3）
+    d_t = np.linalg.norm(t1 - t3)
+    d_R = R3 @ R1.T
+    angle = np.degrees(np.arccos(np.clip((np.trace(d_R) - 1) / 2.0, -1.0, 1.0)))
+    typer.echo(f"\nDelta translation norm (M1 vs M3): {d_t:.6f} (units of square_size)")
+    typer.echo(f"Delta rotation angle (M1 vs M3): {angle:.6f} deg")
+
     # 可视化并保存
     overlay1 = _draw_axes(my_calib_engine.image, camera, extrinsic_1, square_size, axis_length)
     overlay1 = _draw_detected_corners(overlay1, my_calib_engine.image_points)
+    overlay3 = _draw_axes(my_calib_engine.image, camera, extrinsic_3, square_size, axis_length)
+    overlay3 = _draw_detected_corners(overlay3, my_calib_engine.image_points)
 
     output_file_path = Path(output_path) / f"{image_path.stem}_axes_m1.jpg"
     output_file_path.parent.mkdir(parents=True, exist_ok=True)
     cv.imwrite(str(output_file_path), overlay1)
     typer.echo(f"Overlay M1 saved to: {output_file_path}")
+
+    output_file_path3 = Path(output_path) / f"{image_path.stem}_axes_m3.jpg"
+    cv.imwrite(str(output_file_path3), overlay3)
+    typer.echo(f"Overlay M3 saved to: {output_file_path3}")
 
 
 if __name__ == "__main__":

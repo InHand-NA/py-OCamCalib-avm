@@ -68,13 +68,17 @@ class CalibrationEngine:
 
     def detect_corners(self, check: bool = False, max_height: int = 520):
         images_path = get_files(self.working_dir)
+        #debug_file = images_path[2]
+        #images_path = [debug_file]
         count = 0
         world_points = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=True)
 
-        logger.info("Start corners extraction")
+        logger.info(f"Start corners extraction: {images_path}")
 
         for img_f in tqdm(sorted(images_path)):
             img = cv.imread(str(img_f))
+            print(f"Handle img file: {str(img_f)}")
+            cv.imshow('raw img', img)
             height, width = img.shape[:2]
             ratio = width / height
             img_resize = cv.resize(img, (round(ratio * max_height), max_height))
@@ -83,6 +87,7 @@ class CalibrationEngine:
 
             gray_resize = cv.cvtColor(img_resize, cv.COLOR_BGR2GRAY)
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+            cv.imshow('gray', gray)
             for block, bias in list(product(range(20, 40, 5), range(-10, 31, 5))):
 
                 block = (block // 2) * 2 + 1
@@ -401,7 +406,6 @@ class CalibrationEngine:
             file.writelines(content)
 
         logger.info(f"Intrinsic file exported to {output_path}")
-
 
     def save_extrinsic_txt(self):
         if self.extrinsics_t is None or not len(self.extrinsics_t):
