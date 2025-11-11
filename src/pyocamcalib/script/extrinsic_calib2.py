@@ -10,110 +10,180 @@ from typing import Optional, Tuple
 import cv2 as cv
 import numpy as np
 import typer
+from tqdm import tqdm
+from itertools import product
+import json
+import glob
+import math
+from dataclasses import dataclass
+from typing import Tuple, List, Dict
+
+from scipy.optimize import least_squares
+from loguru import logger
 
 from pyocamcalib.core.extrinsic import get_full_rotation_matrix, partial_extrinsics
 from pyocamcalib.modelling.camera import Camera
 from pyocamcalib.modelling.utils import generate_checkerboard_points
-
+from pyocamcalib.core._utils import get_reprojection_error_all, get_reprojection_error
+from pyocamcalib.core.linear_estimation import get_first_linear_estimate, get_taylor_linear
+from pyocamcalib.core.optim import bundle_adjustement
+from pyocamcalib.modelling.utils import get_files, generate_checkerboard_points, check_detection, transform, save_calib, \
+    get_canonical_projection_model, Loader, get_incident_angle
 
 CRITERIA = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 40, 1e-3)
 
-
-def _detect_corners(image: np.ndarray, pattern_size: Tuple[int, int]) -> np.ndarray:
-    """Detect chessboard corners with OpenCV's SB detector and refine them."""
-    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-    for flags in (cv.CALIB_CB_NORMALIZE_IMAGE, cv.CALIB_CB_EXHAUSTIVE | cv.CALIB_CB_ACCURACY):
-        ok, corners = cv.findChessboardCornersSB(gray, pattern_size, flags=flags)
-        if ok:
-            refined = cv.cornerSubPix(gray, corners, (5, 5), (-1, -1), CRITERIA)
-            return np.squeeze(refined, 1)[::-1]
-    raise RuntimeError("Unable to detect chessboard corners in the provided image.")
+# ----------------------------
+# Geometry helpers
+# ----------------------------
+def rodrigues_to_R(rvec: np.ndarray) -> np.ndarray:
+    R, _ = cv.Rodrigues(rvec.astype(np.float64))
+    return R
 
 
-def _reprojection_rms(camera: Camera,
-                      world_points: np.ndarray,
-                      image_points: np.ndarray,
-                      extrinsic: np.ndarray) -> float:
-    projected = camera.world2cam(world_points, extrinsic)
-    return float(np.linalg.norm(projected - image_points, axis=1).mean())
+def project_points_ocam(Pw: np.ndarray, rvec: np.ndarray, tvec: np.ndarray, ocam: Camera) -> np.ndarray:
+    """
+    Pw: (N,3) points in board/world frame (e.g., Z=0 if chessboard plane)
+    rvec: (3,), tvec: (3,)
+    returns pixels (N,2)
+    """
+    R = rodrigues_to_R(rvec)
+    Xc = (Pw @ R.T) + tvec[None, :]
+    # convert to unit direction
+    Xc_norm = Xc / (np.linalg.norm(Xc, axis=1, keepdims=True) + 1e-16)
+    uv = ocam.world2cam(Xc_norm, None)
+    return uv
 
 
-def _estimate_extrinsic(camera: Camera,
-                        image_points: np.ndarray,
-                        world_points: np.ndarray,
-                        image_size: Tuple[int, int]) -> Tuple[np.ndarray, float]:
-    r_part, t_part = partial_extrinsics(image_points, world_points, image_size, camera.distortion_center)
-    candidates = get_full_rotation_matrix(r_part, t_part, image_points, image_size, camera.distortion_center)
-    errors = np.array([_reprojection_rms(camera, world_points, image_points, extrinsic)
-                       for extrinsic in candidates])
-    idx = int(np.argmin(errors))
-    return candidates[idx], float(errors[idx])
+def residuals_pose(params: np.ndarray, Pw: np.ndarray, uv_obs: np.ndarray, ocam: Camera) -> np.ndarray:
+    rvec = params[0:3]
+    tvec = params[3:6]
+    uv_pred = project_points_ocam(Pw, rvec, tvec, ocam)
+    return (uv_pred - uv_obs).ravel()
 
 
-def _rotation_matrix_to_euler(rotation: np.ndarray) -> np.ndarray:
-    """Return roll, pitch, yaw (degrees) following the ZYX convention."""
-    sy = np.sqrt(rotation[0, 0] ** 2 + rotation[1, 0] ** 2)
-    singular = sy < 1e-9
-    if not singular:
-        roll = np.arctan2(rotation[2, 1], rotation[2, 2])
-        pitch = np.arctan2(-rotation[2, 0], sy)
-        yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
-    else:
-        roll = np.arctan2(-rotation[1, 2], rotation[1, 1])
-        pitch = np.arctan2(-rotation[2, 0], sy)
-        yaw = 0.0
-    return np.degrees([roll, pitch, yaw])
+def solve_pose_ocam(Pw: np.ndarray, uv: np.ndarray, ocam: Camera,
+                    rvec0: np.ndarray = None, tvec0: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Nonlinear least squares on OCam projection to estimate rvec,tvec.
+    Returns rvec, tvec, rms_error (pixels).
+    """
+    if rvec0 is None:
+        rvec0 = np.array([0.0, 0.0, 0.0])
+    if tvec0 is None:
+        # rough depth guess: 1m along +Z of camera looking at board
+        tvec0 = np.array([0.0, 0.0, 1.0])
+
+    x0 = np.hstack([rvec0, tvec0])
+    res = least_squares(
+        residuals_pose, x0,
+        args=(Pw, uv, ocam),
+        method="lm", max_nfev=200,
+        xtol=1e-10, ftol=1e-10, gtol=1e-10
+    )
+    rvec = res.x[0:3]
+    tvec = res.x[3:6]
+    rms = math.sqrt(np.mean(res.fun**2))
+    return rvec, tvec, rms
 
 
-def _draw_axes(image: np.ndarray,
-               camera: Camera,
-               extrinsic: np.ndarray,
-               square_size: float,
-               axis_length: float) -> np.ndarray:
-    """Draw the chessboard origin plus X/Y axes on the original fisheye image."""
-    overlay = image.copy()
-    axis_extent = square_size * axis_length
-    axis_points = np.array([
-        [0.0, 0.0, 0.0],
-        [axis_extent, 0.0, 0.0],
-        [0.0, axis_extent, 0.0],
-    ])
-    projected = np.round(camera.world2cam(axis_points, extrinsic)).astype(int)
-    origin = tuple(projected[0])
-    x_axis = tuple(projected[1])
-    y_axis = tuple(projected[2])
-    cv.circle(overlay, origin, 6, (0, 0, 255), -1)
-    cv.line(overlay, origin, x_axis, (0, 0, 255), 2)
-    cv.line(overlay, origin, y_axis, (0, 255, 0), 2)
-    x_label = (x_axis[0] + 5, x_axis[1] + 5)
-    y_label = (y_axis[0] + 5, y_axis[1] + 5)
-    cv.putText(overlay, "X", x_label, cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv.LINE_AA)
-    cv.putText(overlay, "Y", y_label, cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
-    return overlay
+class ExtCalibrationEngine:
+    def __init__(self,
+                 working_dir: str,
+                 chessboard_size: Tuple[int, int],
+                 camera_name: str,
+                 square_size: float = 1):
+        """
+        :param working_dir: path to folder which contains all chessboard images
+        :param chessboard_size: Number of INNER corners per a chessboard (row, column)
+        """
+        self.rms_std_list = None
+        self.rms_mean_list = None
+        self.rms_overall = None
+        self.extrinsics_t_linear = None
+        self.taylor_coefficient_linear = None
+        self.working_dir = Path(working_dir)
+        self.images_path = [str(e) for e in get_files(Path(working_dir))]
+        self.chessboard_size = chessboard_size
+        self.square_size = square_size
+        self.sensor_size = cv.imread(str(self.images_path[0])).shape[:2][::-1]
+        self.distortion_center = (self.sensor_size[0] / 2, self.sensor_size[1] / 2)
+        self.detections = {}
+        self.image_points = None
+        self.world_points = None
+        self.distortion_center_linear = None
+        self.extrinsics_t = None
+        self.taylor_coefficient = None
+        self.stretch_matrix = None
+        self.valid_pattern = None
+        self.cam_name = camera_name
+        self.inverse_poly = None
+        pass
 
 
-def _draw_detected_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
-    """Overlay all detected chessboard corners."""
-    overlay = image.copy()
-    points = np.round(corners).astype(int)
-    for idx, point in enumerate(points, start=1):
-        center = tuple(point)
-        cv.circle(overlay, center, 4, (255, 0, 0), -1)
-        label_pos = (center[0] + 5, center[1] - 5)
-        cv.putText(
-            overlay,
-            str(idx),
-            label_pos,
-            cv.FONT_HERSHEY_SIMPLEX,
-            0.4,
-            (255, 255, 255),
-            1,
-            cv.LINE_AA,
-        )
-    return overlay
+    def generate_checkerboard_points(self, z_axis=True):
+        # get 3D checkerboard points
+        pass
+
+
+    def detect_corners(self, images_file_path, check: bool = False, max_height: int = 520):
+        images_path = [images_file_path]
+        count = 0
+        world_points = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=True)
+
+        logger.info(f"Start corners extraction at {images_file_path}, desired chessboard size {self.chessboard_size}")
+
+        for img_f in tqdm(sorted(images_path)):
+            print(f"detect on image: {img_f}")
+            img = cv.imread(str(img_f))
+            height, width = img.shape[:2]
+            ratio = width / height
+            img_resize = cv.resize(img, (round(ratio * max_height), max_height))
+            r_h = height / max_height
+            r_w = width / (ratio * max_height)
+
+            print(f"h: {height}; w: {width}; ratio: {ratio}")
+
+            gray_resize = cv.cvtColor(img_resize, cv.COLOR_BGR2GRAY)
+            gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+            for block, bias in list(product(range(20, 40, 5), range(-10, 31, 5))):
+
+                block = (block // 2) * 2 + 1
+                img_bw = cv.adaptiveThreshold(gray_resize, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block,
+                                              bias)
+                cv.imshow('img bw', img_bw)
+                ret, corners = cv.findChessboardCornersSB(img_bw, self.chessboard_size, flags=cv.CALIB_CB_EXHAUSTIVE)
+                print(f"find corners 1: {corners}")
+                if not ret:
+                    ret, corners = cv.findChessboardCornersSB(img_bw, self.chessboard_size, flags=0)
+                print(f"find corners 2: {corners}")
+                if ret:
+                    corners = np.squeeze(corners)
+                    corners[:, 0] *= r_w
+                    corners[:, 1] *= r_h
+                    win_size = (5, 5)
+                    zero_zone = (-1, -1)
+                    criteria = (cv.TERM_CRITERIA_EPS + cv.TermCriteria_COUNT, 40, 0.001)
+                    corners = np.expand_dims(corners, axis=0)
+                    cv.cornerSubPix(gray, corners, win_size, zero_zone, criteria)
+                    if check:
+                        check_detection(np.squeeze(corners), img)
+                    count += 1
+                    self.detections[str(img_f)] = {"image_points": np.squeeze(corners)[::-1],
+                                                   "world_points": np.squeeze(world_points)}
+                    self.image_points = np.squeeze(corners)[::-1]
+                    self.world_points = np.squeeze(world_points)
+                    break
+
+        logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
+
+    def extract_extrinsic(self, ocam, visualize=True):
+        pass
+
+    def visualize(self):
+        pass
 
 """
-python src/pyocamcalib/script/extrinsic_calib2.py ./src/pyocamcalib/checkpoints/calibration/calibration_fisheye_1_07112025_152810.json ./test_images/fish_1/Fisheye1_1.jpg 
+python src/pyocamcalib/script/extrinsic_calib2.py ./src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_10112025_113611.json ./test_images/inhandus_1/fe1_3.jpg 
 """
 
 def main(
@@ -134,41 +204,19 @@ def main(
     if square_size <= 0 or axis_length <= 0:
         raise typer.BadParameter("Square size and axis length must be positive numbers.")
 
+    working_dir = "./"
+    camera_name = "inhandus_1"
     image = cv.imread(str(image_path))
     if image is None:
         raise typer.BadParameter(f"Unable to read image: {image_path}")
 
     camera = Camera.load_parameters_json(str(calibration_file))
     pattern_size = (chessboard_size_row, chessboard_size_column)
-    image_points = _detect_corners(image, pattern_size)
-    world_points = generate_checkerboard_points(pattern_size, square_size, z_axis=True)
-    typer.echo("Detected corner coordinates (pixel -> world):")
-    for idx, (pixel, world) in enumerate(zip(image_points, world_points), start=1):
-        typer.echo(
-            f"{idx:03d}: pixel=({pixel[0]:.3f}, {pixel[1]:.3f}) "
-            f"world=({world[0]:.3f}, {world[1]:.3f}, {world[2]:.3f})"
-        )
 
-    extrinsic, rms = _estimate_extrinsic(camera, image_points, world_points, image.shape[:2])
-    rotation = extrinsic[:, :3]
-    translation = extrinsic[:, 3]
-    roll, pitch, yaw = _rotation_matrix_to_euler(rotation)
-
-    typer.echo("Extrinsic matrix [R|t]:")
-    with np.printoptions(precision=6, suppress=True):
-        typer.echo(extrinsic)
-    typer.echo(f"Translation (units={square_size}): "
-               f"x={translation[0]:.6f}, y={translation[1]:.6f}, z={translation[2]:.6f}")
-    typer.echo(f"Orientation (deg): roll={roll:.3f}, pitch={pitch:.3f}, yaw={yaw:.3f}")
-    typer.echo(f"Reprojection RMS error: {rms:.4f} px")
-
-    output_file_path = Path(output_path) / f"{image_path.stem}_axes.jpg"
-    output_file_path.parent.mkdir(parents=True, exist_ok=True)
-    overlay = _draw_axes(image, camera, extrinsic, square_size, axis_length)
-    overlay = _draw_detected_corners(overlay, image_points)
-    print(str(output_file_path))
-    cv.imwrite(str(output_file_path), overlay)
-    typer.echo(f"Overlay saved to: {output_file_path}")
+    chessboard_size = (chessboard_size_row, chessboard_size_column)
+    my_calib_engine = ExtCalibrationEngine(working_dir, chessboard_size, camera_name, square_size)
+    my_calib_engine.detect_corners(image_path, check=True, max_height=520)
+    pass
 
 
 if __name__ == "__main__":

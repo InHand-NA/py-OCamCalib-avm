@@ -18,6 +18,7 @@
 """
 from pyocamcalib.modelling.calibration import CalibrationEngine
 import typer
+import time
 
 
 def main(working_dir: str,
@@ -47,6 +48,8 @@ def main(working_dir: str,
 
     if corners_path is None:
         my_calib_engine.detect_corners(check=check)
+        time.sleep(5)
+        #return None
         my_calib_engine.save_detection()
     else:
         my_calib_engine.load_detection(corners_path)
