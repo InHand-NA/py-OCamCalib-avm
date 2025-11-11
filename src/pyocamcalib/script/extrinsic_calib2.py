@@ -183,7 +183,7 @@ class ExtCalibrationEngine:
         logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
 
     def extract_extrinsic(self, camera: Camera) -> Tuple[np.ndarray, float]:
-        """估计外参 [R|t] 并返回最小重投影误差 (像素)。"""
+        """方法1改进：线性候选 + OCam 非线性细化，返回最优 [R|t] 与像素域误差。"""
         if self.image is None or self.image_points is None or self.world_points is None:
             raise RuntimeError("Corners/world points not available. Run detect_corners first.")
 
@@ -194,18 +194,45 @@ class ExtCalibrationEngine:
 
         # 构建候选并选择最小 RMS 的解
         candidates = get_full_rotation_matrix(r_part, t_part, self.image_points, img_size, camera.distortion_center)
-        errors = []
-        extrinsics = []
-        for cand in candidates:
-            Rt = np.hstack([cand[:, :3], cand[:, 3].reshape(3, 1)])
-            extrinsics.append(Rt)
-            # 用完整 3D 点做重投影评估
-            err = np.linalg.norm(camera.world2cam(self.world_points, Rt) - self.image_points, axis=1).mean()
-            errors.append(err)
 
-        idx = int(np.argmin(errors))
-        self.extrinsics_t = extrinsics[idx]
-        return self.extrinsics_t, float(errors[idx])
+        def _refine_from_candidate(R_init: np.ndarray, t_init: np.ndarray) -> Tuple[np.ndarray, float]:
+            """用 SciPy LM 在 OCam 模型下细化 rvec/tvec。"""
+            # 初值：Rodrigues + t，避免 t_z=0 的退化，给一个合理的初值
+            rvec0, _ = cv.Rodrigues(R_init)
+            tvec0 = t_init.astype(np.float64).copy()
+            if abs(tvec0[2]) < 1e-6:
+                t_xy = float(np.linalg.norm(tvec0[:2]))
+                tvec0[2] = max(1.0, 0.5 * t_xy)
+
+            def _resid(params: np.ndarray) -> np.ndarray:
+                rv = params[:3]
+                tv = params[3:6]
+                Rm, _ = cv.Rodrigues(rv)
+                Rt = np.hstack([Rm, tv.reshape(3, 1)])
+                proj = camera.world2cam(self.world_points, Rt)
+                return (proj - self.image_points).ravel()
+
+            x0 = np.hstack([rvec0.ravel(), tvec0.ravel()])
+            res = least_squares(_resid, x0, method="lm", max_nfev=200, xtol=1e-10, ftol=1e-10, gtol=1e-10)
+            rvec = res.x[:3]
+            tvec = res.x[3:6]
+            Rm, _ = cv.Rodrigues(rvec)
+            Rt_ref = np.hstack([Rm, tvec.reshape(3, 1)])
+            err = float(np.linalg.norm(camera.world2cam(self.world_points, Rt_ref) - self.image_points, axis=1).mean())
+            return Rt_ref, err
+
+        best_Rt = None
+        best_err = np.inf
+        for cand in candidates:
+            R0 = cand[:, :3]
+            t0 = cand[:, 3]
+            Rt_ref, err = _refine_from_candidate(R0, t0)
+            if err < best_err:
+                best_err = err
+                best_Rt = Rt_ref
+
+        self.extrinsics_t = best_Rt
+        return self.extrinsics_t, float(best_err)
 
     def visualize(self, camera: Camera, axis_length: float = 65.0) -> np.ndarray:
         if self.image is None or self.extrinsics_t is None:
