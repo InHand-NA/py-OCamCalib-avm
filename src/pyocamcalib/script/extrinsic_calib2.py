@@ -182,8 +182,15 @@ class ExtCalibrationEngine:
 
         logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
 
-    def extract_extrinsic(self, camera: Camera) -> Tuple[np.ndarray, float]:
-        """方法1改进：线性候选 + OCam 非线性细化，返回最优 [R|t] 与像素域误差。"""
+    def extract_extrinsic(self,
+                          camera: Camera,
+                          depth_prior: Optional[float] = None,
+                          depth_weight: float = 0.0) -> Tuple[np.ndarray, float]:
+        """方法1改进：线性候选 + OCam 非线性细化，返回最优 [R|t] 与像素域误差。
+
+        可选加入弱先验：在 LM 残差向量中附加 sqrt(depth_weight) * (t_z/square_size - depth_prior/square_size)。
+        depth_weight=0 或未提供 depth_prior 时不生效。
+        """
         if self.image is None or self.image_points is None or self.world_points is None:
             raise RuntimeError("Corners/world points not available. Run detect_corners first.")
 
@@ -210,7 +217,14 @@ class ExtCalibrationEngine:
                 Rm, _ = cv.Rodrigues(rv)
                 Rt = np.hstack([Rm, tv.reshape(3, 1)])
                 proj = camera.world2cam(self.world_points, Rt)
-                return (proj - self.image_points).ravel()
+                res = (proj - self.image_points).ravel()
+                # 弱深度先验（单位归一化到格子数）
+                if depth_prior is not None and depth_weight > 0.0 and self.square_size > 0:
+                    tz_norm = tv[2] / float(self.square_size)
+                    z0_norm = float(depth_prior) / float(self.square_size)
+                    prior_res = np.sqrt(depth_weight) * (tz_norm - z0_norm)
+                    res = np.hstack([res, prior_res])
+                return res
 
             x0 = np.hstack([rvec0.ravel(), tvec0.ravel()])
             res = least_squares(_resid, x0, method="lm", max_nfev=200, xtol=1e-10, ftol=1e-10, gtol=1e-10)
@@ -318,15 +332,18 @@ def _draw_detected_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray
 """
 python src/pyocamcalib/script/extrinsic_calib2.py ./src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_10112025_113611.json ./test_images/inhandus_1/fe1_3.jpg 
 """
-
+# 7*7, 57
+# 6x4, 200
 def main(
     calibration_file: Path = typer.Argument(..., help="Path to the fisheye calibration JSON file."),
     image_path: Path = typer.Argument(..., help="Path to the chessboard image."),
-    chessboard_size_row: int = typer.Option(8, help="Number of inner corners along a row."),
-    chessboard_size_column: int = typer.Option(6, help="Number of inner corners along a column."),
-    square_size: float = typer.Option(32.5, help="Size of a chessboard square (units carry over to translation)."),
+    chessboard_size_row: int = typer.Option(6, help="Number of inner corners along a row."),
+    chessboard_size_column: int = typer.Option(4, help="Number of inner corners along a column."),
+    square_size: float = typer.Option(200.0, help="Size of a chessboard square (units carry over to translation)."),
     axis_length: float = typer.Option(65.0, help="Axis length expressed in number of squares to draw."),
     output_path: Optional[Path] = typer.Option('./outputs/', help="Optional path to save the overlay image."),
+    depth_prior: Optional[float] = typer.Option(None, help="Optional weak prior for tz (same units as square_size)."),
+    depth_weight: float = typer.Option(0.0, help="Weak prior weight; 0 disables (suggest 0.1–2.0)."),
 ):
     if not calibration_file.is_file():
         raise typer.BadParameter(f"Calibration file not found: {calibration_file}")
@@ -351,7 +368,11 @@ def main(
     my_calib_engine.detect_corners(image_path, check=True, max_height=520)
 
     # 方法1：基于线性部分 + 候选消歧
-    extrinsic_1, rms_1 = my_calib_engine.extract_extrinsic(camera)
+    extrinsic_1, rms_1 = my_calib_engine.extract_extrinsic(
+        camera,
+        depth_prior=depth_prior,
+        depth_weight=depth_weight,
+    )
     R1 = extrinsic_1[:, :3]
     t1 = extrinsic_1[:, 3]
 
