@@ -214,6 +214,47 @@ class ExtCalibrationEngine:
         overlay = _draw_detected_corners(overlay, self.image_points)
         return overlay
 
+    def extract_extrinsic_solvepnp(self, camera: Camera) -> Tuple[np.ndarray, float]:
+        """方法2：将像素映射到单位视线，构造针孔归一化坐标，使用 solvePnP 估计外参。
+
+        步骤：
+        - image_points -> cam2world 得到单位向量 m=[mx,my,mz]
+        - 归一化针孔坐标 uv = (mx/mz, my/mz)，K=I, distCoeffs=None
+        - 先 EPnP 粗估，再 ITERATIVE 细化
+        - 用 OCam 模型重投影评估 RMS（像素）
+        """
+        if self.image_points is None or self.world_points is None:
+            raise RuntimeError("Corners/world points not available. Run detect_corners first.")
+
+        # 像素 -> 单位视线
+        bearings = camera.cam2world(self.image_points.copy())  # (N,3)
+        # 归一化针孔坐标
+        uv_norm = np.column_stack([bearings[:, 0] / bearings[:, 2],
+                                   bearings[:, 1] / bearings[:, 2]]).astype(np.float64)
+
+        Pw = self.world_points.astype(np.float64)
+        # OpenCV 期望形状 Nx1x2 或 Nx2，均可
+        # 先用 EPNP 初值
+        ok, rvec, tvec = cv.solvePnP(Pw, uv_norm, np.eye(3, dtype=np.float64), None,
+                                     flags=cv.SOLVEPNP_EPNP)
+        if not ok:
+            raise RuntimeError("solvePnP (EPNP) failed to find an initial solution")
+
+        # 再用 ITERATIVE 细化
+        ok, rvec, tvec = cv.solvePnP(Pw, uv_norm, np.eye(3, dtype=np.float64), None,
+                                     rvec, tvec, useExtrinsicGuess=True,
+                                     flags=cv.SOLVEPNP_ITERATIVE)
+        if not ok:
+            raise RuntimeError("solvePnP (ITERATIVE) refinement failed")
+
+        R, _ = cv.Rodrigues(rvec)
+        Rt = np.hstack([R, tvec.reshape(3, 1)])
+
+        # 用 OCam 模型评估像素域 RMS
+        reproj = camera.world2cam(self.world_points, Rt)
+        rms = float(np.linalg.norm(reproj - self.image_points, axis=1).mean())
+        return Rt, rms
+
 
 def _draw_axes(image: np.ndarray,
                camera: Camera,
@@ -282,10 +323,15 @@ def main(
     my_calib_engine = ExtCalibrationEngine(working_dir, chessboard_size, camera_name, square_size)
     my_calib_engine.detect_corners(image_path, check=True, max_height=520)
 
-    # 估计外参
-    extrinsic, rms = my_calib_engine.extract_extrinsic(camera)
-    R = extrinsic[:, :3]
-    t = extrinsic[:, 3]
+    # 方法1：基于线性部分 + 候选消歧
+    extrinsic_1, rms_1 = my_calib_engine.extract_extrinsic(camera)
+    R1 = extrinsic_1[:, :3]
+    t1 = extrinsic_1[:, 3]
+
+    # 方法2：cam2world -> 归一化针孔坐标 -> solvePnP
+    extrinsic_2, rms_2 = my_calib_engine.extract_extrinsic_solvepnp(camera)
+    R2 = extrinsic_2[:, :3]
+    t2 = extrinsic_2[:, 3]
 
     # 角度输出
     def _rotation_matrix_to_euler(rotation: np.ndarray) -> np.ndarray:
@@ -301,21 +347,44 @@ def main(
             yaw = 0.0
         return np.degrees([roll, pitch, yaw])
 
-    roll, pitch, yaw = _rotation_matrix_to_euler(R)
+    roll1, pitch1, yaw1 = _rotation_matrix_to_euler(R1)
+    roll2, pitch2, yaw2 = _rotation_matrix_to_euler(R2)
 
-    typer.echo("Extrinsic matrix [R|t]:")
+    typer.echo("Method 1: [R|t] (linear+disambiguation)")
     with np.printoptions(precision=6, suppress=True):
-        typer.echo(extrinsic)
-    typer.echo(f"Translation (units={square_size}): x={t[0]:.6f}, y={t[1]:.6f}, z={t[2]:.6f}")
-    typer.echo(f"Orientation (deg): roll={roll:.3f}, pitch={pitch:.3f}, yaw={yaw:.3f}")
-    typer.echo(f"Reprojection RMS error: {rms:.4f} px")
+        typer.echo(extrinsic_1)
+    typer.echo(f"t1 (units={square_size}): x={t1[0]:.6f}, y={t1[1]:.6f}, z={t1[2]:.6f}")
+    typer.echo(f"rpy1 (deg): roll={roll1:.3f}, pitch={pitch1:.3f}, yaw={yaw1:.3f}")
+    typer.echo(f"RMS1: {rms_1:.4f} px")
+
+    typer.echo("\nMethod 2: [R|t] (solvePnP on normalized)")
+    with np.printoptions(precision=6, suppress=True):
+        typer.echo(extrinsic_2)
+    typer.echo(f"t2 (units={square_size}): x={t2[0]:.6f}, y={t2[1]:.6f}, z={t2[2]:.6f}")
+    typer.echo(f"rpy2 (deg): roll={roll2:.3f}, pitch={pitch2:.3f}, yaw={yaw2:.3f}")
+    typer.echo(f"RMS2: {rms_2:.4f} px")
+
+    # 差异指标
+    d_t = np.linalg.norm(t1 - t2)
+    d_R = R2 @ R1.T
+    angle = np.degrees(np.arccos(np.clip((np.trace(d_R) - 1) / 2.0, -1.0, 1.0)))
+    typer.echo(f"\nDelta translation norm: {d_t:.6f} (units of square_size)")
+    typer.echo(f"Delta rotation angle: {angle:.6f} deg")
 
     # 可视化并保存
-    overlay = my_calib_engine.visualize(camera, axis_length=axis_length)
-    output_file_path = Path(output_path) / f"{image_path.stem}_axes.jpg"
+    overlay1 = _draw_axes(my_calib_engine.image, camera, extrinsic_1, square_size, axis_length)
+    overlay1 = _draw_detected_corners(overlay1, my_calib_engine.image_points)
+    overlay2 = _draw_axes(my_calib_engine.image, camera, extrinsic_2, square_size, axis_length)
+    overlay2 = _draw_detected_corners(overlay2, my_calib_engine.image_points)
+
+    output_file_path = Path(output_path) / f"{image_path.stem}_axes_m1.jpg"
     output_file_path.parent.mkdir(parents=True, exist_ok=True)
-    cv.imwrite(str(output_file_path), overlay)
-    typer.echo(f"Overlay saved to: {output_file_path}")
+    cv.imwrite(str(output_file_path), overlay1)
+    typer.echo(f"Overlay M1 saved to: {output_file_path}")
+
+    output_file_path2 = Path(output_path) / f"{image_path.stem}_axes_m2.jpg"
+    cv.imwrite(str(output_file_path2), overlay2)
+    typer.echo(f"Overlay M2 saved to: {output_file_path2}")
 
 
 if __name__ == "__main__":
