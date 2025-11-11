@@ -376,11 +376,6 @@ def main(
     R1 = extrinsic_1[:, :3]
     t1 = extrinsic_1[:, 3]
 
-    # 方法2：cam2world -> 归一化针孔坐标 -> solvePnP
-    extrinsic_2, rms_2 = my_calib_engine.extract_extrinsic_solvepnp(camera)
-    R2 = extrinsic_2[:, :3]
-    t2 = extrinsic_2[:, 3]
-
     # 角度输出
     def _rotation_matrix_to_euler(rotation: np.ndarray) -> np.ndarray:
         sy = np.sqrt(rotation[0, 0] ** 2 + rotation[1, 0] ** 2)
@@ -396,7 +391,6 @@ def main(
         return np.degrees([roll, pitch, yaw])
 
     roll1, pitch1, yaw1 = _rotation_matrix_to_euler(R1)
-    roll2, pitch2, yaw2 = _rotation_matrix_to_euler(R2)
 
     typer.echo("Method 1: [R|t] (linear+disambiguation)")
     with np.printoptions(precision=6, suppress=True):
@@ -405,34 +399,14 @@ def main(
     typer.echo(f"rpy1 (deg): roll={roll1:.3f}, pitch={pitch1:.3f}, yaw={yaw1:.3f}")
     typer.echo(f"RMS1: {rms_1:.4f} px")
 
-    typer.echo("\nMethod 2: [R|t] (solvePnP on normalized)")
-    with np.printoptions(precision=6, suppress=True):
-        typer.echo(extrinsic_2)
-    typer.echo(f"t2 (units={square_size}): x={t2[0]:.6f}, y={t2[1]:.6f}, z={t2[2]:.6f}")
-    typer.echo(f"rpy2 (deg): roll={roll2:.3f}, pitch={pitch2:.3f}, yaw={yaw2:.3f}")
-    typer.echo(f"RMS2: {rms_2:.4f} px")
-
-    # 差异指标
-    d_t = np.linalg.norm(t1 - t2)
-    d_R = R2 @ R1.T
-    angle = np.degrees(np.arccos(np.clip((np.trace(d_R) - 1) / 2.0, -1.0, 1.0)))
-    typer.echo(f"\nDelta translation norm: {d_t:.6f} (units of square_size)")
-    typer.echo(f"Delta rotation angle: {angle:.6f} deg")
-
     # 可视化并保存
     overlay1 = _draw_axes(my_calib_engine.image, camera, extrinsic_1, square_size, axis_length)
     overlay1 = _draw_detected_corners(overlay1, my_calib_engine.image_points)
-    overlay2 = _draw_axes(my_calib_engine.image, camera, extrinsic_2, square_size, axis_length)
-    overlay2 = _draw_detected_corners(overlay2, my_calib_engine.image_points)
 
     output_file_path = Path(output_path) / f"{image_path.stem}_axes_m1.jpg"
     output_file_path.parent.mkdir(parents=True, exist_ok=True)
     cv.imwrite(str(output_file_path), overlay1)
     typer.echo(f"Overlay M1 saved to: {output_file_path}")
-
-    output_file_path2 = Path(output_path) / f"{image_path.stem}_axes_m2.jpg"
-    cv.imwrite(str(output_file_path2), overlay2)
-    typer.echo(f"Overlay M2 saved to: {output_file_path2}")
 
 
 if __name__ == "__main__":
