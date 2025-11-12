@@ -182,6 +182,14 @@ class ExtCalibrationEngine:
 
         logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
 
+    def my_generate_world_points(self):
+        cols, rows = self.chessboard_size
+        # Object points in board frame (single template reused per image)
+        objp = np.zeros((1, cols * rows, 3), np.float32)
+        objp[0, :, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
+        objp *= float(self.square_size)
+        return objp
+
     def detect_corners2(self, image_file_path: Path, check: bool = False, max_height=520) -> bool:
         """Detect chessboard corners using classic OpenCV routine.
 
@@ -218,12 +226,17 @@ class ExtCalibrationEngine:
         subpix_criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.1)
         cv.cornerSubPix(gray, corners, (3, 3), (-1, -1), subpix_criteria)
 
+        draw_img = self.image.copy()
+        cv.drawChessboardCorners(self.image, self.chessboard_size, corners, True)
+
         # Generate corresponding world points (Z=0 plane with unit set by square_size)
-        world_points = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=True)
+        #world_points = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=True)
+        world_points = self.my_generate_world_points()
 
         # Store detections (keep ordering consistent with existing detect_corners)
         corners2d = np.squeeze(corners).astype(np.float64)
-        self.image_points = corners2d[::-1]
+        self.image_points = corners2d #corners2d[::-1]
+
         self.world_points = np.squeeze(world_points)
         self.detections[self.image_path] = {
             "image_points": self.image_points,
@@ -455,16 +468,20 @@ def _draw_axes(image: np.ndarray,
         [0.0, 0.0, 0.0],
         [axis_extent, 0.0, 0.0],
         [0.0, axis_extent, 0.0],
+        [0.0, 0.0, axis_extent],
     ])
     projected = np.round(camera.world2cam(axis_points, extrinsic)).astype(int)
     origin = tuple(projected[0])
     x_axis = tuple(projected[1])
     y_axis = tuple(projected[2])
+    z_axis = tuple(projected[3])
     cv.circle(overlay, origin, 6, (0, 0, 255), -1)
     cv.line(overlay, origin, x_axis, (0, 0, 255), 2)
     cv.line(overlay, origin, y_axis, (0, 255, 0), 2)
+    cv.line(overlay, origin, z_axis, (255, 0, 0), 2)
     cv.putText(overlay, "X", (x_axis[0] + 5, x_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv.LINE_AA)
     cv.putText(overlay, "Y", (y_axis[0] + 5, y_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
+    cv.putText(overlay, "Z", (z_axis[0] + 5, z_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv.LINE_AA)
     return overlay
 
 
@@ -643,7 +660,7 @@ def main(
 
     # 可视化并保存
     overlay1 = _draw_axes(my_calib_engine.image, camera, extrinsic_1, square_size, axis_length)
-    overlay1 = _draw_detected_corners(overlay1, my_calib_engine.image_points)
+    #overlay1 = _draw_detected_corners(overlay1, my_calib_engine.image_points)
 
     output_file_path = Path(output_path) / f"{image_path.stem}_axes_m1.jpg"
     output_file_path.parent.mkdir(parents=True, exist_ok=True)
