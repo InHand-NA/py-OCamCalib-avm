@@ -416,10 +416,106 @@ def _draw_detected_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray
     points = np.round(corners).astype(int)
     for point in points:
         cv.circle(overlay, (int(point[0]), int(point[1])), 3, (255, 0, 0), -1)
+    # Draw chessboard origin and XYZ axes if camera/extrinsic are available
+    try:
+        cam = globals().get("_LAST_CAMERA", None)
+        Rt = globals().get("_LAST_EXTRINSIC", None)
+        axis_extent = globals().get("_LAST_AXIS_EXTENT", None)
+        if cam is not None and Rt is not None:
+            if axis_extent is None:
+                axis_extent = 1.0
+            axis_points = np.array([
+                [0.0, 0.0, 0.0],
+                [axis_extent, 0.0, 0.0],
+                [0.0, axis_extent, 0.0],
+                [0.0, 0.0, axis_extent],
+            ])
+            proj = np.round(cam.world2cam(axis_points, Rt)).astype(int)
+            origin = tuple(proj[0])
+            x_axis = tuple(proj[1])
+            y_axis = tuple(proj[2])
+            z_axis = tuple(proj[3])
+            cv.circle(overlay, origin, 6, (255, 0, 255), -1)  # origin in magenta
+            cv.line(overlay, origin, x_axis, (0, 0, 255), 2)
+            cv.line(overlay, origin, y_axis, (0, 255, 0), 2)
+            cv.line(overlay, origin, z_axis, (255, 0, 0), 2)
+            cv.putText(overlay, "X", (x_axis[0] + 5, x_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv.LINE_AA)
+            cv.putText(overlay, "Y", (y_axis[0] + 5, y_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
+            cv.putText(overlay, "Z", (z_axis[0] + 5, z_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv.LINE_AA)
+    except Exception:
+        pass
     return overlay
 
+
+
+def eval_extrinsic():
+    """Interactive check: pick 4 pixels and print their world coords on Z=0.
+
+    This function relies on globals set by main():
+      - _LAST_CAMERA: Camera
+      - _LAST_IMAGE: np.ndarray
+      - _LAST_EXTRINSIC: 3x4 [R|t]
+    """
+    try:
+        cam = globals().get("_LAST_CAMERA", None)
+        img = globals().get("_LAST_IMAGE", None)
+        Rt = globals().get("_LAST_EXTRINSIC", None)
+    except Exception:
+        cam, img, Rt = None, None, None
+
+    if cam is None or img is None or Rt is None:
+        logger.error("eval_extrinsic requires a computed extrinsic and loaded camera/image (run main first).")
+        return
+
+    picked = []
+
+    def _on_mouse(event, x, y, flags, param):
+        if event == cv.EVENT_LBUTTONDOWN:
+            picked.append([x, y])
+            cv.drawMarker(param, (x, y), (0, 255, 255), markerType=cv.MARKER_CROSS, markerSize=12, thickness=2)
+            cv.imshow('pick-4', param)
+
+    viz = img.copy()
+    cv.namedWindow('pick-4', cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
+    cv.imshow('pick-4', viz)
+    cv.setMouseCallback('pick-4', _on_mouse, viz)
+
+    while len(picked) < 4:
+        if cv.waitKey(10) & 0xFF == 27:  # ESC to quit early
+            break
+    cv.destroyWindow('pick-4')
+
+    if len(picked) == 0:
+        logger.warning("No points picked.")
+        return
+
+    uv = np.asarray(picked, dtype=np.float64)
+
+    # Compute world intersection with Z=0 plane
+    R = Rt[:, :3].astype(np.float64)
+    t = Rt[:, 3].astype(np.float64)
+    R_T = R.T
+    Cw = -R_T @ t  # camera center in world coordinates
+
+    # rays in camera coords, then rotate to world coords
+    rays_cam = cam.cam2world(uv.copy())  # Nx3 unit
+    rays_w = rays_cam @ R_T.T  # rotate to world: v_w = R^T * v_c
+
+    vz = rays_w[:, 2]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        lamb = -Cw[2] / vz
+    # handle nearly parallel rays (vz ~ 0): set NaN
+    invalid = np.abs(vz) < 1e-12
+    lamb[invalid] = np.nan
+
+    Xw = Cw[None, :] + lamb[:, None] * rays_w  # Nx3
+
+    for i, (px, pw) in enumerate(zip(uv, Xw)):
+        typer.echo(f"[{i}] pixel=({px[0]:.2f}, {px[1]:.2f}) -> world=(X={pw[0]:.6f}, Y={pw[1]:.6f}, Z={pw[2]:.6f})")
+
+
 """
-python src/pyocamcalib/script/extrinsic_calib2.py ./src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_10112025_113611.json ./test_images/inhandus_1/fe1_3.jpg 
+python src/pyocamcalib/script/extrinsic_calib2.py /home/zyb/avm/py-OCamCalib/src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_12112025_140617.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/ext_test3.jpg
 """
 # 7*7, 57
 # 6x4, 200
@@ -488,45 +584,20 @@ def main(
     typer.echo(f"rpy1 (deg): roll={roll1:.3f}, pitch={pitch1:.3f}, yaw={yaw1:.3f}")
     typer.echo(f"RMS1: {rms_1:.4f} px")
 
-    # 方法3：IPPE 多解 + OCam 像素域打分 + OCam-LM 细化
-    extrinsic_3, rms_3 = my_calib_engine.extract_extrinsic_ippe(
-        camera,
-        depth_prior=depth_prior,
-        depth_weight=depth_weight,
-        mz_threshold=0.0,
-    )
-    R3 = extrinsic_3[:, :3]
-    t3 = extrinsic_3[:, 3]
-    roll3, pitch3, yaw3 = _rotation_matrix_to_euler(R3)
-
-    typer.echo("\nMethod 3: [R|t] (IPPE + OCam refine)")
-    with np.printoptions(precision=6, suppress=True):
-        typer.echo(extrinsic_3)
-    typer.echo(f"t3 (units={square_size}): x={t3[0]:.6f}, y={t3[1]:.6f}, z={t3[2]:.6f}")
-    typer.echo(f"rpy3 (deg): roll={roll3:.3f}, pitch={pitch3:.3f}, yaw={yaw3:.3f}")
-    typer.echo(f"RMS3: {rms_3:.4f} px")
-
-    # 差异指标（方法1 vs 方法3）
-    d_t = np.linalg.norm(t1 - t3)
-    d_R = R3 @ R1.T
-    angle = np.degrees(np.arccos(np.clip((np.trace(d_R) - 1) / 2.0, -1.0, 1.0)))
-    typer.echo(f"\nDelta translation norm (M1 vs M3): {d_t:.6f} (units of square_size)")
-    typer.echo(f"Delta rotation angle (M1 vs M3): {angle:.6f} deg")
-
     # 可视化并保存
     overlay1 = _draw_axes(my_calib_engine.image, camera, extrinsic_1, square_size, axis_length)
     overlay1 = _draw_detected_corners(overlay1, my_calib_engine.image_points)
-    overlay3 = _draw_axes(my_calib_engine.image, camera, extrinsic_3, square_size, axis_length)
-    overlay3 = _draw_detected_corners(overlay3, my_calib_engine.image_points)
 
     output_file_path = Path(output_path) / f"{image_path.stem}_axes_m1.jpg"
     output_file_path.parent.mkdir(parents=True, exist_ok=True)
     cv.imwrite(str(output_file_path), overlay1)
     typer.echo(f"Overlay M1 saved to: {output_file_path}")
 
-    output_file_path3 = Path(output_path) / f"{image_path.stem}_axes_m3.jpg"
-    cv.imwrite(str(output_file_path3), overlay3)
-    typer.echo(f"Overlay M3 saved to: {output_file_path3}")
+    # Cache for interactive eval_extrinsic()
+    globals()["_LAST_CAMERA"] = camera
+    globals()["_LAST_IMAGE"] = my_calib_engine.image
+    globals()["_LAST_EXTRINSIC"] = extrinsic_1
+    eval_extrinsic()
 
 
 if __name__ == "__main__":
