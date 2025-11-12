@@ -121,67 +121,6 @@ class ExtCalibrationEngine:
         self.inverse_poly = None
         pass
 
-
-    def generate_checkerboard_points(self, z_axis: bool = True) -> np.ndarray:
-        """生成棋盘格世界坐标并缓存。"""
-        pts = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=z_axis)
-        self.world_points = np.squeeze(pts)
-        return self.world_points
-
-
-    def detect_corners(self, images_file_path, check: bool = False, max_height: int = 520):
-        images_path = [images_file_path]
-        count = 0
-        world_points = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=True)
-
-        logger.info(f"Start corners extraction at {images_file_path}, desired chessboard size {self.chessboard_size}")
-
-        for img_f in tqdm(sorted(images_path)):
-            print(f"detect on image: {img_f}")
-            self.image_path = str(img_f)
-            img = cv.imread(self.image_path)
-            height, width = img.shape[:2]
-            ratio = width / height
-            img_resize = cv.resize(img, (round(ratio * max_height), max_height))
-            r_h = height / max_height
-            r_w = width / (ratio * max_height)
-
-            print(f"h: {height}; w: {width}; ratio: {ratio}")
-
-            gray_resize = cv.cvtColor(img_resize, cv.COLOR_BGR2GRAY)
-            gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-            for block, bias in list(product(range(20, 40, 5), range(-10, 31, 5))):
-
-                block = (block // 2) * 2 + 1
-                img_bw = cv.adaptiveThreshold(gray_resize, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block,
-                                              bias)
-                cv.imshow('img bw', img_bw)
-                ret, corners = cv.findChessboardCornersSB(img_bw, self.chessboard_size, flags=cv.CALIB_CB_EXHAUSTIVE)
-                print(f"find corners 1: {corners}")
-                if not ret:
-                    ret, corners = cv.findChessboardCornersSB(img_bw, self.chessboard_size, flags=0)
-                print(f"find corners 2: {corners}")
-                if ret:
-                    corners = np.squeeze(corners)
-                    corners[:, 0] *= r_w
-                    corners[:, 1] *= r_h
-                    win_size = (5, 5)
-                    zero_zone = (-1, -1)
-                    criteria = (cv.TERM_CRITERIA_EPS + cv.TermCriteria_COUNT, 40, 0.001)
-                    corners = np.expand_dims(corners, axis=0)
-                    cv.cornerSubPix(gray, corners, win_size, zero_zone, criteria)
-                    if check:
-                        check_detection(np.squeeze(corners), img)
-                    count += 1
-                    self.detections[self.image_path] = {"image_points": np.squeeze(corners)[::-1],
-                                                        "world_points": np.squeeze(world_points)}
-                    self.image_points = np.squeeze(corners)[::-1]
-                    self.world_points = np.squeeze(world_points)
-                    self.image = img
-                    break
-
-        logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
-
     def my_generate_world_points(self):
         cols, rows = self.chessboard_size
         # Object points in board frame (single template reused per image)
@@ -318,137 +257,6 @@ class ExtCalibrationEngine:
         self.extrinsics_t = best_Rt
         return self.extrinsics_t, float(best_err)
 
-    def extract_extrinsic_solvepnp(self, camera: Camera) -> Tuple[np.ndarray, float]:
-        """方法2：将像素映射到单位视线，构造针孔归一化坐标，使用 solvePnP 估计外参。
-
-        步骤：
-        - image_points -> cam2world 得到单位向量 m=[mx,my,mz]
-        - 归一化针孔坐标 uv = (mx/mz, my/mz)，K=I, distCoeffs=None
-        - 先 EPnP 粗估，再 ITERATIVE 细化
-        - 用 OCam 模型重投影评估 RMS（像素）
-        """
-        if self.image_points is None or self.world_points is None:
-            raise RuntimeError("Corners/world points not available. Run detect_corners first.")
-
-        # 像素 -> 单位视线
-        bearings = camera.cam2world(self.image_points.copy())  # (N,3)
-        # 归一化针孔坐标
-        uv_norm = np.column_stack([bearings[:, 0] / bearings[:, 2],
-                                   bearings[:, 1] / bearings[:, 2]]).astype(np.float64)
-
-        Pw = self.world_points.astype(np.float64)
-        # OpenCV 期望形状 Nx1x2 或 Nx2，均可
-        # 先用 EPNP 初值
-        ok, rvec, tvec = cv.solvePnP(Pw, uv_norm, np.eye(3, dtype=np.float64), None,
-                                     flags=cv.SOLVEPNP_EPNP)
-        if not ok:
-            raise RuntimeError("solvePnP (EPNP) failed to find an initial solution")
-
-        # 再用 ITERATIVE 细化
-        ok, rvec, tvec = cv.solvePnP(Pw, uv_norm, np.eye(3, dtype=np.float64), None,
-                                     rvec, tvec, useExtrinsicGuess=True,
-                                     flags=cv.SOLVEPNP_ITERATIVE)
-        if not ok:
-            raise RuntimeError("solvePnP (ITERATIVE) refinement failed")
-
-        R, _ = cv.Rodrigues(rvec)
-        Rt = np.hstack([R, tvec.reshape(3, 1)])
-
-        # 用 OCam 模型评估像素域 RMS
-        reproj = camera.world2cam(self.world_points, Rt)
-        rms = float(np.linalg.norm(reproj - self.image_points, axis=1).mean())
-        return Rt, rms
-
-    def extract_extrinsic_ippe(self,
-                               camera: Camera,
-                               depth_prior: Optional[float] = None,
-                               depth_weight: float = 0.0,
-                               mz_threshold: float = 0.0) -> Tuple[np.ndarray, float]:
-        """方法3：IPPE 多解 + OCam 像素域打分 + OCam-LM 细化。
-
-        - 将像素角点映射为单位视线，形成针孔归一化坐标；
-        - 使用 solvePnPGeneric(IPPE) 输出多个候选位姿；
-        - 用 OCam 模型在像素域评分选最优；
-        - 在像素域做一次 LM 细化（可选弱深度先验）。
-        """
-        if self.image_points is None or self.world_points is None:
-            raise RuntimeError("Corners/world points not available. Run detect_corners first.")
-
-        # 1) 像素 -> 单位视线 -> 针孔归一化坐标
-        bearings = camera.cam2world(self.image_points.copy())  # (N,3)
-        if mz_threshold > 0.0:
-            mask = bearings[:, 2] > mz_threshold
-            if mask.sum() < 6:
-                mask = np.ones(len(bearings), dtype=bool)
-        else:
-            mask = np.ones(len(bearings), dtype=bool)
-
-        uv_norm = np.column_stack([
-            bearings[mask, 0] / bearings[mask, 2],
-            bearings[mask, 1] / bearings[mask, 2],
-        ]).astype(np.float64)
-        Pw = self.world_points[mask].astype(np.float64)
-
-        # 2) IPPE 多解
-        try:
-            ok, rvecs, tvecs, _ = cv.solvePnPGeneric(
-                Pw, uv_norm, np.eye(3, dtype=np.float64), None, flags=cv.SOLVEPNP_IPPE
-            )
-        except TypeError:
-            # 某些 OpenCV 版本不返回第四项
-            ok, rvecs, tvecs = cv.solvePnPGeneric(
-                Pw, uv_norm, np.eye(3, dtype=np.float64), None, flags=cv.SOLVEPNP_IPPE
-            )
-        if not ok or len(rvecs) == 0:
-            raise RuntimeError("solvePnPGeneric(IPPE) failed to produce candidates")
-
-        # 3) 用 OCam 模型在像素域评分
-        cands = []
-        for rvec, tvec in zip(rvecs, tvecs):
-            R, _ = cv.Rodrigues(rvec)
-            Rt = np.hstack([R, tvec.reshape(3, 1)])
-            reproj = camera.world2cam(self.world_points, Rt)
-            rms = float(np.linalg.norm(reproj - self.image_points, axis=1).mean())
-            cands.append((Rt, rms))
-
-        Rt0, _ = min(cands, key=lambda x: x[1])
-
-        # 4) OCam-LM 细化（与方法1一致），含可选弱深度先验
-        def _resid(params: np.ndarray) -> np.ndarray:
-            rv = params[:3]
-            tv = params[3:6]
-            Rm, _ = cv.Rodrigues(rv)
-            Rt = np.hstack([Rm, tv.reshape(3, 1)])
-            proj = camera.world2cam(self.world_points, Rt)
-            res = (proj - self.image_points).ravel()
-            if depth_prior is not None and depth_weight > 0.0 and self.square_size > 0:
-                tz_norm = tv[2] / float(self.square_size)
-                z0_norm = float(depth_prior) / float(self.square_size)
-                # 将先验按点数缩放，便于权重在不同N下保持可比性
-                scale = np.sqrt(depth_weight * max(1, 2 * len(self.world_points)))
-                prior_res = scale * (tz_norm - z0_norm)
-                res = np.hstack([res, prior_res])
-            return res
-
-        R0, t0 = Rt0[:, :3], Rt0[:, 3]
-        rvec0, _ = cv.Rodrigues(R0)
-        tvec0 = t0.astype(np.float64).copy()
-        if depth_prior is not None:
-            tvec0[2] = float(depth_prior)
-        elif abs(tvec0[2]) < 1e-6:
-            t_xy = float(np.linalg.norm(tvec0[:2]))
-            tvec0[2] = max(1.0, 0.5 * t_xy)
-
-        x0 = np.hstack([rvec0.ravel(), tvec0.ravel()])
-        res = least_squares(_resid, x0, method="lm", max_nfev=200, xtol=1e-10, ftol=1e-10, gtol=1e-10)
-        rvec = res.x[:3]
-        tvec = res.x[3:6]
-        Rm, _ = cv.Rodrigues(rvec)
-        Rt_ref = np.hstack([Rm, tvec.reshape(3, 1)])
-        rms = float(np.linalg.norm(camera.world2cam(self.world_points, Rt_ref) - self.image_points, axis=1).mean())
-        return Rt_ref, rms
-
-
 def _draw_axes(image: np.ndarray,
                camera: Camera,
                extrinsic: np.ndarray,
@@ -503,17 +311,17 @@ def eval_extrinsic():
         if event == cv.EVENT_LBUTTONDOWN:
             picked.append([x, y])
             cv.drawMarker(param, (x, y), (0, 255, 255), markerType=cv.MARKER_CROSS, markerSize=12, thickness=2)
-            cv.imshow('pick-4', param)
+            cv.imshow('pick-8', param)
 
     viz = img.copy()
-    cv.namedWindow('pick-4', cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
-    cv.imshow('pick-4', viz)
-    cv.setMouseCallback('pick-4', _on_mouse, viz)
+    cv.namedWindow('pick-8', cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
+    cv.imshow('pick-8', viz)
+    cv.setMouseCallback('pick-8', _on_mouse, viz)
 
-    while len(picked) < 4:
+    while len(picked) < 8:
         if cv.waitKey(10) & 0xFF == 27:  # ESC to quit early
             break
-    cv.destroyWindow('pick-4')
+    cv.destroyWindow('pick-8')
 
     if len(picked) == 0:
         logger.warning("No points picked.")
