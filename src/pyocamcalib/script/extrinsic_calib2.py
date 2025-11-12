@@ -182,6 +182,63 @@ class ExtCalibrationEngine:
 
         logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
 
+    def detect_corners2(self, image_file_path: Path, check: bool = False, max_height=520) -> bool:
+        """Detect chessboard corners using classic OpenCV routine.
+
+        Reference: see opencv_fe_intrinsicCalib2.py corner detection (findChessboardCorners + subpix).
+
+        - Uses flags: ADAPTIVE_THRESH | FAST_CHECK | NORMALIZE_IMAGE
+        - Refines with cornerSubPix
+        - Populates self.image_points (Nx2), self.world_points (Nx3), self.image, self.image_path
+
+        :param image_file_path: Path to a single chessboard image
+        :param check: If True, launch interactive check/edit UI
+        :return: True if detection succeeded, False otherwise
+        """
+        img = cv.imread(str(image_file_path))
+        if img is None or img.size == 0:
+            logger.error(f"Unable to read image: {image_file_path}")
+            return False
+
+        self.image_path = str(image_file_path)
+        self.image = img
+
+        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+        det_flags = (
+            cv.CALIB_CB_ADAPTIVE_THRESH
+            | cv.CALIB_CB_FAST_CHECK
+            | cv.CALIB_CB_NORMALIZE_IMAGE
+        )
+        found, corners = cv.findChessboardCorners(gray, self.chessboard_size, det_flags)
+        if not found or corners is None:
+            logger.warning(f"Chessboard not found: {image_file_path}")
+            return False
+
+        # Subpixel refinement
+        subpix_criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.1)
+        cv.cornerSubPix(gray, corners, (3, 3), (-1, -1), subpix_criteria)
+
+        # Generate corresponding world points (Z=0 plane with unit set by square_size)
+        world_points = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=True)
+
+        # Store detections (keep ordering consistent with existing detect_corners)
+        corners2d = np.squeeze(corners).astype(np.float64)
+        self.image_points = corners2d[::-1]
+        self.world_points = np.squeeze(world_points)
+        self.detections[self.image_path] = {
+            "image_points": self.image_points,
+            "world_points": self.world_points,
+        }
+
+        if check:
+            try:
+                check_detection(self.image_points.copy(), img)
+            except Exception:
+                pass
+
+        logger.info("Chessboard corners detected (detect_corners2)")
+        return True
+
     def extract_extrinsic(self,
                           camera: Camera,
                           depth_prior: Optional[float] = None,
@@ -525,10 +582,10 @@ def main(
     chessboard_size_row: int = typer.Option(6, help="Number of inner corners along a row."),
     chessboard_size_column: int = typer.Option(4, help="Number of inner corners along a column."),
     square_size: float = typer.Option(200.0, help="Size of a chessboard square (units carry over to translation)."),
-    axis_length: float = typer.Option(65.0, help="Axis length expressed in number of squares to draw."),
+    axis_length: float = typer.Option(3.0, help="Axis length expressed in number of squares to draw."),
     output_path: Optional[Path] = typer.Option('./outputs/', help="Optional path to save the overlay image."),
-    depth_prior: Optional[float] = typer.Option(1200.0, help="Optional weak prior for tz (same units as square_size)."),
-    depth_weight: float = typer.Option(200.0, help="Weak prior weight; 0 disables (suggest 0.1–2.0)."),
+    depth_prior: Optional[float] = typer.Option(None, help="Optional weak prior for tz (same units as square_size)."),
+    depth_weight: float = typer.Option(0, help="Weak prior weight; 0 disables (suggest 0.1–2.0)."),
 ):
     if not calibration_file.is_file():
         raise typer.BadParameter(f"Calibration file not found: {calibration_file}")
@@ -550,7 +607,7 @@ def main(
 
     chessboard_size = (chessboard_size_row, chessboard_size_column)
     my_calib_engine = ExtCalibrationEngine(working_dir, chessboard_size, camera_name, square_size)
-    my_calib_engine.detect_corners(image_path, check=True, max_height=520)
+    my_calib_engine.detect_corners2(image_path, check=True, max_height=520)
 
     # 方法1：基于线性部分 + 候选消歧
     extrinsic_1, rms_1 = my_calib_engine.extract_extrinsic(
