@@ -318,13 +318,6 @@ class ExtCalibrationEngine:
         self.extrinsics_t = best_Rt
         return self.extrinsics_t, float(best_err)
 
-    def visualize(self, camera: Camera, axis_length: float = 65.0) -> np.ndarray:
-        if self.image is None or self.extrinsics_t is None:
-            raise RuntimeError("Extrinsics not available. Run extract_extrinsic first.")
-        overlay = _draw_axes(self.image, camera, self.extrinsics_t, self.square_size, axis_length)
-        overlay = _draw_detected_corners(overlay, self.image_points)
-        return overlay
-
     def extract_extrinsic_solvepnp(self, camera: Camera) -> Tuple[np.ndarray, float]:
         """方法2：将像素映射到单位视线，构造针孔归一化坐标，使用 solvePnP 估计外参。
 
@@ -468,7 +461,7 @@ def _draw_axes(image: np.ndarray,
         [0.0, 0.0, 0.0],
         [axis_extent, 0.0, 0.0],
         [0.0, axis_extent, 0.0],
-        [0.0, 0.0, axis_extent],
+        [0.0, 0.0, -axis_extent],
     ])
     projected = np.round(camera.world2cam(axis_points, extrinsic)).astype(int)
     origin = tuple(projected[0])
@@ -483,43 +476,6 @@ def _draw_axes(image: np.ndarray,
     cv.putText(overlay, "Y", (y_axis[0] + 5, y_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
     cv.putText(overlay, "Z", (z_axis[0] + 5, z_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv.LINE_AA)
     return overlay
-
-
-def _draw_detected_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
-    overlay = image.copy()
-    points = np.round(corners).astype(int)
-    for point in points:
-        cv.circle(overlay, (int(point[0]), int(point[1])), 3, (255, 0, 0), -1)
-    # Draw chessboard origin and XYZ axes if camera/extrinsic are available
-    try:
-        cam = globals().get("_LAST_CAMERA", None)
-        Rt = globals().get("_LAST_EXTRINSIC", None)
-        axis_extent = globals().get("_LAST_AXIS_EXTENT", None)
-        if cam is not None and Rt is not None:
-            if axis_extent is None:
-                axis_extent = 1.0
-            axis_points = np.array([
-                [0.0, 0.0, 0.0],
-                [axis_extent, 0.0, 0.0],
-                [0.0, axis_extent, 0.0],
-                [0.0, 0.0, axis_extent],
-            ])
-            proj = np.round(cam.world2cam(axis_points, Rt)).astype(int)
-            origin = tuple(proj[0])
-            x_axis = tuple(proj[1])
-            y_axis = tuple(proj[2])
-            z_axis = tuple(proj[3])
-            cv.circle(overlay, origin, 6, (255, 0, 255), -1)  # origin in magenta
-            cv.line(overlay, origin, x_axis, (0, 0, 255), 2)
-            cv.line(overlay, origin, y_axis, (0, 255, 0), 2)
-            cv.line(overlay, origin, z_axis, (255, 0, 0), 2)
-            cv.putText(overlay, "X", (x_axis[0] + 5, x_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv.LINE_AA)
-            cv.putText(overlay, "Y", (y_axis[0] + 5, y_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
-            cv.putText(overlay, "Z", (z_axis[0] + 5, z_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv.LINE_AA)
-    except Exception:
-        pass
-    return overlay
-
 
 
 def eval_extrinsic():
