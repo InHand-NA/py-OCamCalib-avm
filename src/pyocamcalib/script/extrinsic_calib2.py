@@ -23,67 +23,7 @@ from loguru import logger
 
 from pyocamcalib.core.extrinsic import get_full_rotation_matrix, partial_extrinsics
 from pyocamcalib.modelling.camera import Camera
-from pyocamcalib.modelling.utils import generate_checkerboard_points
-from pyocamcalib.core._utils import get_reprojection_error_all, get_reprojection_error
-from pyocamcalib.core.linear_estimation import get_first_linear_estimate, get_taylor_linear
-from pyocamcalib.core.optim import bundle_adjustement
-from pyocamcalib.modelling.utils import get_files, generate_checkerboard_points, check_detection, transform, save_calib, \
-    get_canonical_projection_model, Loader, get_incident_angle
-
-CRITERIA = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 40, 1e-3)
-
-# ----------------------------
-# Geometry helpers
-# ----------------------------
-def rodrigues_to_R(rvec: np.ndarray) -> np.ndarray:
-    R, _ = cv.Rodrigues(rvec.astype(np.float64))
-    return R
-
-
-def project_points_ocam(Pw: np.ndarray, rvec: np.ndarray, tvec: np.ndarray, ocam: Camera) -> np.ndarray:
-    """
-    Pw: (N,3) points in board/world frame (e.g., Z=0 if chessboard plane)
-    rvec: (3,), tvec: (3,)
-    returns pixels (N,2)
-    """
-    R = rodrigues_to_R(rvec)
-    Xc = (Pw @ R.T) + tvec[None, :]
-    # convert to unit direction
-    Xc_norm = Xc / (np.linalg.norm(Xc, axis=1, keepdims=True) + 1e-16)
-    uv = ocam.world2cam(Xc_norm, None)
-    return uv
-
-
-def residuals_pose(params: np.ndarray, Pw: np.ndarray, uv_obs: np.ndarray, ocam: Camera) -> np.ndarray:
-    rvec = params[0:3]
-    tvec = params[3:6]
-    uv_pred = project_points_ocam(Pw, rvec, tvec, ocam)
-    return (uv_pred - uv_obs).ravel()
-
-
-def solve_pose_ocam(Pw: np.ndarray, uv: np.ndarray, ocam: Camera,
-                    rvec0: np.ndarray = None, tvec0: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, float]:
-    """
-    Nonlinear least squares on OCam projection to estimate rvec,tvec.
-    Returns rvec, tvec, rms_error (pixels).
-    """
-    if rvec0 is None:
-        rvec0 = np.array([0.0, 0.0, 0.0])
-    if tvec0 is None:
-        # rough depth guess: 1m along +Z of camera looking at board
-        tvec0 = np.array([0.0, 0.0, 1.0])
-
-    x0 = np.hstack([rvec0, tvec0])
-    res = least_squares(
-        residuals_pose, x0,
-        args=(Pw, uv, ocam),
-        method="lm", max_nfev=200,
-        xtol=1e-10, ftol=1e-10, gtol=1e-10
-    )
-    rvec = res.x[0:3]
-    tvec = res.x[3:6]
-    rms = math.sqrt(np.mean(res.fun**2))
-    return rvec, tvec, rms
+from pyocamcalib.modelling.utils import get_files, check_detection
 
 
 class ExtCalibrationEngine:
