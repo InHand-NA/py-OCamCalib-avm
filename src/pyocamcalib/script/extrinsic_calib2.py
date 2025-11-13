@@ -59,7 +59,6 @@ class ExtCalibrationEngine:
         self.valid_pattern = None
         self.cam_name = camera_name
         self.inverse_poly = None
-        pass
 
     def my_generate_world_points(self):
         cols, rows = self.chessboard_size
@@ -131,6 +130,26 @@ class ExtCalibrationEngine:
         logger.info("Chessboard corners detected (detect_corners2)")
         return True
 
+    def visualize(self, camera: Camera, axis_length: float = 3.0) -> np.ndarray:
+        """在图像上叠加棋盘坐标系原点与 X/Y/Z 三轴，并绘制检测到的角点。
+
+        - 使用 self.extrinsics_t 作为 [R|t]（棋盘->相机）。
+        - 坐标轴长度 = self.square_size * axis_length。
+        - 若未先提取外参或未检测到角点，将抛出异常提示。
+        """
+        if self.image is None or self.extrinsics_t is None:
+            raise RuntimeError("Extrinsics not available. Run extract_extrinsic first.")
+
+        overlay = _draw_axes(self.image, camera, self.extrinsics_t, self.square_size, axis_length)
+
+        # 绘制角点（浅橙色小圆点）
+        if self.image_points is not None:
+            pts = np.round(self.image_points).astype(int)
+            for p in pts:
+                cv.circle(overlay, (int(p[0]), int(p[1])), 3, (255, 200, 0), -1)
+
+        return overlay
+
     def extract_extrinsic(self,
                           camera: Camera,
                           depth_prior: Optional[float] = None,
@@ -196,6 +215,61 @@ class ExtCalibrationEngine:
 
         self.extrinsics_t = best_Rt
         return self.extrinsics_t, float(best_err)
+
+    def save_extrinsic_txt(self, output_path: Optional[Path] = None) -> Path:
+        """Export the current single-view extrinsic [R|t] to a .txt file.
+
+        Format mirrors modelling.calibration.CalibrationEngine.save_extrinsic_txt:
+        - translation (same unit as square_size; e.g., mm)
+        - rotation as roll/pitch/yaw (degrees)
+
+        If output_path is None, writes to
+        ./src/pyocamcalib/checkpoints/calibration/ocamcalib_extrinsic_<cam_name>.txt
+        """
+        if self.extrinsics_t is None:
+            raise ValueError("Extrinsic parameters are empty. Run extract_extrinsic() first.")
+
+        Rt = np.asarray(self.extrinsics_t, dtype=np.float64)
+        R = Rt[:, :3]
+        t = Rt[:, 3]
+
+        def rotation_matrix_to_euler(rot: np.ndarray) -> Tuple[float, float, float]:
+            sy = float(np.sqrt(rot[0, 0] ** 2 + rot[1, 0] ** 2))
+            singular = sy < 1e-9
+            if not singular:
+                roll = np.arctan2(rot[2, 1], rot[2, 2])
+                pitch = np.arctan2(-rot[2, 0], sy)
+                yaw = np.arctan2(rot[1, 0], rot[0, 0])
+            else:
+                roll = np.arctan2(-rot[1, 2], rot[1, 1])
+                pitch = np.arctan2(-rot[2, 0], sy)
+                yaw = 0.0
+            ang = np.degrees([roll, pitch, yaw])
+            return float(ang[0]), float(ang[1]), float(ang[2])
+
+        roll, pitch, yaw = rotation_matrix_to_euler(R)
+
+        if output_path is None:
+            output_path = Path(f'./src/pyocamcalib/checkpoints/calibration/ocamcalib_extrinsic_{self.cam_name}.txt')
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        img_tag = self.image_path if self.image_path is not None else "<image>"
+        lines = []
+        lines.append(f"{img_tag}:\n")
+        lines.append("translation (units)\n")
+        lines.append(f"  {t[0]:.9g}        # trans_x\n")
+        lines.append(f"  {t[1]:.9g}        # trans_y\n")
+        lines.append(f"  {t[2]:.9g}        # trans_z\n")
+        lines.append("rotation (degree)\n")
+        lines.append(f"  {roll:.9g}        # roll\n")
+        lines.append(f"  {pitch:.9g}        # pitch\n")
+        lines.append(f"  {yaw:.9g}        # yaw\n\n")
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+        logger.info(f"Extrinsic file exported to {output_path}")
+        return output_path
 
 def _draw_axes(image: np.ndarray,
                camera: Camera,
@@ -294,11 +368,15 @@ def eval_extrinsic():
 
 """
 python src/pyocamcalib/script/extrinsic_calib2.py /home/zyb/avm/py-OCamCalib/src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_12112025_140617.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/ext_test3.jpg
+
+
+python src/pyocamcalib/script/extrinsic_calib2.py src/pyocamcalib/checkpoints/calibration/calibration_usb_front_13112025_102405.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/usb_front_1.jpg
 """
 # 7*7, 57
 # 6x4, 200
 def main(
     calibration_file: Path = typer.Argument(..., help="Path to the fisheye calibration JSON file."),
+    camera_name: str = typer.Argument(..., help='Camera name'),
     image_path: Path = typer.Argument(..., help="Path to the chessboard image."),
     chessboard_size_row: int = typer.Option(6, help="Number of inner corners along a row."),
     chessboard_size_column: int = typer.Option(4, help="Number of inner corners along a column."),
@@ -318,7 +396,6 @@ def main(
         raise typer.BadParameter("Square size and axis length must be positive numbers.")
 
     working_dir = "./"
-    camera_name = "inhandus_1"
     image = cv.imread(str(image_path))
     if image is None:
         raise typer.BadParameter(f"Unable to read image: {image_path}")
@@ -370,6 +447,13 @@ def main(
     output_file_path.parent.mkdir(parents=True, exist_ok=True)
     cv.imwrite(str(output_file_path), overlay1)
     typer.echo(f"Overlay M1 saved to: {output_file_path}")
+
+    # 导出外参到 txt（单视图）
+    try:
+        out_txt = my_calib_engine.save_extrinsic_txt()
+        typer.echo(f"Extrinsic saved to: {out_txt}")
+    except Exception as e:
+        typer.echo(f"Failed to export extrinsic txt: {e}")
 
     # Cache for interactive eval_extrinsic()
     globals()["_LAST_CAMERA"] = camera
