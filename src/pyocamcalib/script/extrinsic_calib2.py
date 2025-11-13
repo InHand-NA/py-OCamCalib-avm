@@ -289,7 +289,11 @@ def _draw_axes(image: np.ndarray,
 
 
 def eval_extrinsic():
-    """Interactive check: pick 4 pixels and print their world coords on Z=0.
+    """Interactive check: pick 8 pixels and print their world coords on Z=0.
+
+    Adds a 3x magnifier overlay near the mouse position while selecting points
+    to improve precision. Returned pixel coordinates remain in the original
+    image coordinate system (no scaling is applied to the stored points).
 
     This function relies on globals set by main():
       - _LAST_CAMERA: Camera
@@ -308,18 +312,93 @@ def eval_extrinsic():
         return
 
 
+    def _overlay_magnifier(frame: np.ndarray, x: int, y: int, zoom: int = 3, half_size: int = 20) -> None:
+        """在光标附近绘制一个 3× 放大镜窗口，中心对准当前鼠标位置。
+
+        - half_size: 原图 ROI 半径（以像素为单位）；最终放大补丁尺寸约为 (2*half_size*zoom).
+        - zoom: 放大倍数（默认 3）。
+        - 注意：仅在 frame 上进行绘制，不改变返回的像素坐标。
+        """
+        h, w = frame.shape[:2]
+        if x < 0 or y < 0 or x >= w or y >= h:
+            return
+
+        hs = int(max(4, half_size))
+        x0 = max(0, x - hs)
+        y0 = max(0, y - hs)
+        x1 = min(w, x + hs)
+        y1 = min(h, y + hs)
+        if x1 <= x0 or y1 <= y0:
+            return
+
+        patch = frame[y0:y1, x0:x1]
+        # 使用最近邻插值保持像素边缘清晰
+        zoom_w = (x1 - x0) * int(zoom)
+        zoom_h = (y1 - y0) * int(zoom)
+        zoom_patch = cv.resize(patch, (zoom_w, zoom_h), interpolation=cv.INTER_NEAREST)
+
+        # 优先将放大窗放在光标右下角，若越界则改为左/上
+        pos_x = x + 20
+        pos_y = y + 20
+        if pos_x + zoom_w > w:
+            pos_x = x - 20 - zoom_w
+        if pos_y + zoom_h > h:
+            pos_y = y - 20 - zoom_h
+        pos_x = max(0, pos_x)
+        pos_y = max(0, pos_y)
+
+        # 叠加放大窗
+        frame[pos_y:pos_y + zoom_h, pos_x:pos_x + zoom_w] = zoom_patch
+        cv.rectangle(frame, (pos_x - 1, pos_y - 1), (pos_x + zoom_w + 1, pos_y + zoom_h + 1),
+                     (50, 200, 255), 1)
+
+        # 在放大窗中心绘制十字，指示精确像素位置（考虑边缘裁剪的偏移）
+        cx = int(round((x - x0) * int(zoom)))
+        cy = int(round((y - y0) * int(zoom)))
+        cv.drawMarker(frame, (pos_x + cx, pos_y + cy), (0, 255, 255),
+                      markerType=cv.MARKER_CROSS, markerSize=12, thickness=1)
+
+    def _redraw(x: int = -1, y: int = -1) -> None:
+        """根据当前鼠标位置与已选点重绘窗口（含放大镜）。"""
+        frame = img.copy()
+        # 画提示与计数
+        cv.putText(
+            frame,
+            f"Pick 8 points  [ESC exit]  ({len(picked)}/8)",
+            (10, 28),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (230, 230, 230),
+            2,
+            cv.LINE_AA,
+        )
+        # 绘制已选择的点
+        for (px, py) in picked:
+            cv.drawMarker(frame, (int(px), int(py)), (0, 255, 255),
+                          markerType=cv.MARKER_CROSS, markerSize=12, thickness=2)
+            cv.circle(frame, (int(px), int(py)), 3, (0, 255, 255), -1)
+
+        if x >= 0 and y >= 0:
+            # 光标位置描记 + 放大镜
+            cv.drawMarker(frame, (x, y), (0, 200, 255), markerType=cv.MARKER_CROSS, markerSize=10, thickness=1)
+            _overlay_magnifier(frame, x, y, zoom=5, half_size=20)
+
+        cv.imshow('pick-8', frame)
+
     def _on_mouse(event, x, y, flags, param):
-        if event == cv.EVENT_LBUTTONDOWN:
+        if event == cv.EVENT_MOUSEMOVE:
+            _redraw(x, y)
+        elif event == cv.EVENT_LBUTTONDOWN:
             picked.append([x, y])
-            cv.drawMarker(param, (x, y), (0, 255, 255), markerType=cv.MARKER_CROSS, markerSize=12, thickness=2)
-            cv.imshow('pick-8', param)
+            _redraw(x, y)
     
     picked = []
     if True:
-        viz = img.copy()
+        # 固定窗口为原图大小，确保鼠标坐标即为原图坐标
         cv.namedWindow('pick-8', cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
-        cv.imshow('pick-8', viz)
-        cv.setMouseCallback('pick-8', _on_mouse, viz)
+        cv.resizeWindow('pick-8', img.shape[1], img.shape[0])
+        _redraw()
+        cv.setMouseCallback('pick-8', _on_mouse, None)
 
         while len(picked) < 8:
             if cv.waitKey(10) & 0xFF == 27:  # ESC to quit early
