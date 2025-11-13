@@ -15,6 +15,7 @@ from itertools import product
 import json
 import glob
 import math
+import time
 from dataclasses import dataclass
 from typing import Tuple, List, Dict
 
@@ -38,6 +39,7 @@ class ExtCalibrationEngine:
         """
         self.chessboard_size = chessboard_size
         self.square_size = square_size
+        self.corners = None
         self.image_points = None
         self.world_points = None
         self.image = None
@@ -89,9 +91,7 @@ class ExtCalibrationEngine:
         subpix_criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.1)
         cv.cornerSubPix(gray, corners, (3, 3), (-1, -1), subpix_criteria)
 
-        draw_img = self.image.copy()
-        cv.drawChessboardCorners(self.image, self.chessboard_size, corners, True)
-
+        self.corners = corners
         # Generate corresponding world points (Z=0 plane with unit set by square_size)
         #world_points = generate_checkerboard_points(self.chessboard_size, self.square_size, z_axis=True)
         world_points = self.my_generate_world_points()
@@ -104,7 +104,11 @@ class ExtCalibrationEngine:
 
         if check:
             try:
-                check_detection(self.image_points.copy(), img)
+                #check_detection(self.image_points.copy(), img)
+                draw_img = self.image.copy()
+                cv.drawChessboardCorners(draw_img, self.chessboard_size, self.corners, True) 
+                cv.imshow('Detected Corners', draw_img)   
+                cv.waitKey(0)            
             except Exception:
                 pass
 
@@ -121,7 +125,9 @@ class ExtCalibrationEngine:
         if self.image is None or self.extrinsics_t is None:
             raise RuntimeError("Extrinsics not available. Run extract_extrinsic first.")
 
-        overlay = _draw_axes(self.image, camera, self.extrinsics_t, self.square_size, axis_length)
+        draw_img = self.image.copy()
+        cv.drawChessboardCorners(draw_img, self.chessboard_size, self.corners, True) 
+        overlay = _draw_axes(draw_img, camera, self.extrinsics_t, self.square_size, axis_length)
 
         # 绘制角点（浅橙色小圆点）
         if self.image_points is not None:
@@ -129,6 +135,7 @@ class ExtCalibrationEngine:
             for p in pts:
                 cv.circle(overlay, (int(p[0]), int(p[1])), 3, (255, 200, 0), -1)
 
+        cv.imshow('Chessboard Frame & Corners', overlay)
         return overlay
 
     def extract_extrinsic(self,
@@ -300,29 +307,29 @@ def eval_extrinsic():
         logger.error("eval_extrinsic requires a computed extrinsic and loaded camera/image (run main first).")
         return
 
-    picked = []
 
     def _on_mouse(event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
             picked.append([x, y])
             cv.drawMarker(param, (x, y), (0, 255, 255), markerType=cv.MARKER_CROSS, markerSize=12, thickness=2)
             cv.imshow('pick-8', param)
+    
+    picked = []
+    if True:
+        viz = img.copy()
+        cv.namedWindow('pick-8', cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
+        cv.imshow('pick-8', viz)
+        cv.setMouseCallback('pick-8', _on_mouse, viz)
 
-    viz = img.copy()
-    cv.namedWindow('pick-8', cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
-    cv.imshow('pick-8', viz)
-    cv.setMouseCallback('pick-8', _on_mouse, viz)
+        while len(picked) < 8:
+            if cv.waitKey(10) & 0xFF == 27:  # ESC to quit early
+                break
+        cv.destroyWindow('pick-8')
 
-    while len(picked) < 8:
-        if cv.waitKey(10) & 0xFF == 27:  # ESC to quit early
-            break
-    cv.destroyWindow('pick-8')
-
-    if len(picked) == 0:
-        logger.warning("No points picked.")
-        return
-
-    uv = np.asarray(picked, dtype=np.float64)
+        if len(picked) == 0:
+            logger.warning("No points picked.")
+            return
+        uv = np.asarray(picked, dtype=np.float64)
 
     # Compute world intersection with Z=0 plane
     R = Rt[:, :3].astype(np.float64)
@@ -419,6 +426,8 @@ def main(
     typer.echo(f"t1 (units={square_size}): x={t1[0]:.6f}, y={t1[1]:.6f}, z={t1[2]:.6f}")
     typer.echo(f"rpy1 (deg): roll={roll1:.3f}, pitch={pitch1:.3f}, yaw={yaw1:.3f}")
     typer.echo(f"RMS1: {rms_1:.4f} px")
+
+    my_calib_engine.visualize(camera)
 
     # 可视化并保存
     overlay1 = _draw_axes(my_calib_engine.image, camera, extrinsic_1, square_size, axis_length)
