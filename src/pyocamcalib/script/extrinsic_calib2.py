@@ -36,29 +36,14 @@ class ExtCalibrationEngine:
         :param working_dir: path to folder which contains all chessboard images
         :param chessboard_size: Number of INNER corners per a chessboard (row, column)
         """
-        self.rms_std_list = None
-        self.rms_mean_list = None
-        self.rms_overall = None
-        self.extrinsics_t_linear = None
-        self.taylor_coefficient_linear = None
-        self.working_dir = Path(working_dir)
-        self.images_path = [str(e) for e in get_files(Path(working_dir))]
         self.chessboard_size = chessboard_size
         self.square_size = square_size
-        self.sensor_size = cv.imread(str(self.images_path[0])).shape[:2][::-1]
-        self.distortion_center = (self.sensor_size[0] / 2, self.sensor_size[1] / 2)
-        self.detections = {}
         self.image_points = None
         self.world_points = None
         self.image = None
         self.image_path = None
-        self.distortion_center_linear = None
         self.extrinsics_t = None
-        self.taylor_coefficient = None
-        self.stretch_matrix = None
-        self.valid_pattern = None
         self.cam_name = camera_name
-        self.inverse_poly = None
 
     def my_generate_world_points(self):
         cols, rows = self.chessboard_size
@@ -116,10 +101,6 @@ class ExtCalibrationEngine:
         self.image_points = corners2d #corners2d[::-1]
 
         self.world_points = np.squeeze(world_points)
-        self.detections[self.image_path] = {
-            "image_points": self.image_points,
-            "world_points": self.world_points,
-        }
 
         if check:
             try:
@@ -370,13 +351,13 @@ def eval_extrinsic():
 python src/pyocamcalib/script/extrinsic_calib2.py /home/zyb/avm/py-OCamCalib/src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_12112025_140617.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/ext_test3.jpg
 
 
-python src/pyocamcalib/script/extrinsic_calib2.py src/pyocamcalib/checkpoints/calibration/calibration_usb_front_13112025_102405.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/usb_front_1.jpg
+python src/pyocamcalib/script/extrinsic_calib2.py usb_front src/pyocamcalib/checkpoints/calibration/calibration_usb_front_13112025_102405.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/usb_front_2.jpg
 """
 # 7*7, 57
 # 6x4, 200
 def main(
-    calibration_file: Path = typer.Argument(..., help="Path to the fisheye calibration JSON file."),
     camera_name: str = typer.Argument(..., help='Camera name'),
+    calibration_file: Path = typer.Argument(..., help="Path to the fisheye calibration JSON file."),
     image_path: Path = typer.Argument(..., help="Path to the chessboard image."),
     chessboard_size_row: int = typer.Option(6, help="Number of inner corners along a row."),
     chessboard_size_column: int = typer.Option(4, help="Number of inner corners along a column."),
