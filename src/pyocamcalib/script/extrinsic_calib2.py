@@ -438,6 +438,9 @@ python src/pyocamcalib/script/extrinsic_calib2.py /home/zyb/avm/py-OCamCalib/src
 
 
 python src/pyocamcalib/script/extrinsic_calib2.py usb_front src/pyocamcalib/checkpoints/calibration/calibration_usb_front_13112025_102405.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/usb_front_2.jpg
+
+
+python src/pyocamcalib/script/extrinsic_calib2.py usb_front src/pyocamcalib/checkpoints/calibration/calibration_usb_front_13112025_102405.json  ./outputs/captures/20251114_144111/front_20251114_144111.jpg
 """
 # 7*7, 57
 # 6x4, 200
@@ -447,7 +450,7 @@ def main(
     image_path: Path = typer.Argument(..., help="Path to the chessboard image."),
     chessboard_size_row: int = typer.Option(6, help="Number of inner corners along a row."),
     chessboard_size_column: int = typer.Option(4, help="Number of inner corners along a column."),
-    square_size: float = typer.Option(200.0, help="Size of a chessboard square (units carry over to translation)."),
+    square_size: float = typer.Option(30.0, help="Size of a chessboard square (units carry over to translation)."),
     axis_length: float = typer.Option(3.0, help="Axis length expressed in number of squares to draw."),
     output_path: Optional[Path] = typer.Option('./outputs/', help="Optional path to save the overlay image."),
     depth_prior: Optional[float] = typer.Option(None, help="Optional weak prior for tz (same units as square_size)."),
