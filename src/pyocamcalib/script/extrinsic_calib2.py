@@ -271,7 +271,7 @@ def _draw_axes(image: np.ndarray,
         [0.0, 0.0, 0.0],
         [axis_extent, 0.0, 0.0],
         [0.0, axis_extent, 0.0],
-        [0.0, 0.0, -axis_extent],
+        [0.0, 0.0, -axis_extent], # z轴取反只是为了视觉效果更直观，实际坐标系还是右手坐标系。
     ])
     projected = np.round(camera.world2cam(axis_points, extrinsic)).astype(int)
     origin = tuple(projected[0])
@@ -434,7 +434,7 @@ def eval_extrinsic():
 
 
 """
-python src/pyocamcalib/script/extrinsic_calib2.py /home/zyb/avm/py-OCamCalib/src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_12112025_140617.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/ext_test3.jpg
+python src/pyocamcalib/script/extrinsic_calib2.py inhandus_1 /home/zyb/avm/py-OCamCalib/src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_12112025_140617.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/ext_test3.jpg
 
 
 python src/pyocamcalib/script/extrinsic_calib2.py usb_front src/pyocamcalib/checkpoints/calibration/calibration_usb_front_13112025_102405.json  /home/zyb/avm/py-OCamCalib/test_images/ext_test/usb_front_2.jpg
@@ -448,9 +448,9 @@ def main(
     camera_name: str = typer.Argument(..., help='Camera name'),
     calibration_file: Path = typer.Argument(..., help="Path to the fisheye calibration JSON file."),
     image_path: Path = typer.Argument(..., help="Path to the chessboard image."),
-    chessboard_size_row: int = typer.Option(6, help="Number of inner corners along a row."),
-    chessboard_size_column: int = typer.Option(4, help="Number of inner corners along a column."),
-    square_size: float = typer.Option(30.0, help="Size of a chessboard square (units carry over to translation)."),
+    chessboard_size_column: int = typer.Option(6, help="Number of inner corners along a column."),
+    chessboard_size_row: int = typer.Option(4, help="Number of inner corners along a row."),
+    square_size: float = typer.Option(200.0, help="Size of a chessboard square (units carry over to translation)."),
     axis_length: float = typer.Option(3.0, help="Axis length expressed in number of squares to draw."),
     output_path: Optional[Path] = typer.Option('./outputs/', help="Optional path to save the overlay image."),
     depth_prior: Optional[float] = typer.Option(None, help="Optional weak prior for tz (same units as square_size)."),
@@ -471,9 +471,8 @@ def main(
         raise typer.BadParameter(f"Unable to read image: {image_path}")
 
     camera = Camera.load_parameters_json(str(calibration_file))
-    pattern_size = (chessboard_size_row, chessboard_size_column)
 
-    chessboard_size = (chessboard_size_row, chessboard_size_column)
+    chessboard_size = (chessboard_size_column, chessboard_size_row)
     my_calib_engine = ExtCalibrationEngine(working_dir, chessboard_size, camera_name, square_size)
     my_calib_engine.detect_corners2(image_path, check=True, max_height=520)
 
