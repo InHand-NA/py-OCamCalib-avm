@@ -3,7 +3,7 @@
 
 设计要点：
 - 世界坐标系与 front 相机看到的棋盘格坐标系完全一致（即 front 棋盘格为世界坐标原点/朝向）。
-- 其余 3 个棋盘（right/back/left）在世界坐标系下的平移由程序预定义（可通过参数覆盖），
+- 其余 3 个棋盘（right/back/left）在世界坐标系下的平移由程序预定义，
   姿态由程序按顺时针每次绕 Z 轴旋转 90° 设定：front=0°，right=-90°，back=-180°，left=-270°。
 - 对每个相机，先在各自图像中检测棋盘角点，估计“棋盘坐标系 -> 相机坐标系”的外参 [R|t]，
   再结合“棋盘坐标系 -> 世界坐标系”固定变换，转换为“世界坐标系 -> 相机坐标系”的外参 [R|t]。
@@ -29,6 +29,10 @@ from loguru import logger
 from pyocamcalib.modelling.camera import Camera
 from pyocamcalib.script.extrinsic_calib2 import ExtCalibrationEngine
 
+# 代码内预定义：right/back/left 棋盘原点在 front-世界坐标中的 (x, y)
+DEFAULT_RIGHT_XY = (317, 315)
+DEFAULT_BACK_XY = (150, 785)
+DEFAULT_LEFT_XY = (-163, 465)
 
 app = typer.Typer(help="四相机联合外参标定（AVM）")
 
@@ -40,6 +44,10 @@ def rotz(deg: float) -> np.ndarray:
     """绕 Z 轴旋转的旋转矩阵（右手系，deg 为角度，正方向为逆时针）。"""
     rad = np.deg2rad(deg)
     c, s = float(np.cos(rad)), float(np.sin(rad))
+    if abs(c) < 1e-12:
+        c = 0.0
+    if abs(s) < 1e-12:
+        s = 0.0
     return np.array([[c, -s, 0.0],
                      [s,  c, 0.0],
                      [0.0, 0.0, 1.0]], dtype=np.float64)
@@ -106,7 +114,7 @@ def visualize(image: np.ndarray,
         [0.0, 0.0, 0.0],
         [axis_extent, 0.0, 0.0],
         [0.0, axis_extent, 0.0],
-        [0.0, 0.0, axis_extent],
+        [0.0, 0.0, -axis_extent],
     ], dtype=np.float64)
     proj = np.round(camera.world2cam(world_axes, Rt_world_to_cam)).astype(int)
     o = tuple(proj[0])
@@ -137,7 +145,7 @@ def visualize(image: np.ndarray,
 def _pick_and_print_world_points(image: np.ndarray,
                                  camera: Camera,
                                  Rt_world_to_cam: np.ndarray,
-                                 count: int = 8,
+                                 count: int = 4,
                                  win_name: str = 'pick') -> None:
     """
     交互拾取像素点，并计算其在世界坐标系 Z=0 平面上的交点坐标，打印输出。
@@ -151,16 +159,60 @@ def _pick_and_print_world_points(image: np.ndarray,
     """
     picked: list = []
 
-    def _on_mouse(event, x, y, flags, param):
-        if event == cv.EVENT_LBUTTONDOWN:
-            picked.append([x, y])
-            cv.drawMarker(param, (x, y), (0, 255, 255), markerType=cv.MARKER_CROSS, markerSize=12, thickness=2)
-            cv.imshow(win_name, param)
+    def _overlay_magnifier(frame: np.ndarray, x: int, y: int, zoom: int = 3, half_size: int = 20) -> None:
+        h, w = frame.shape[:2]
+        if x < 0 or y < 0 or x >= w or y >= h:
+            return
+        hs = int(max(4, half_size))
+        x0 = max(0, x - hs)
+        y0 = max(0, y - hs)
+        x1 = min(w, x + hs)
+        y1 = min(h, y + hs)
+        if x1 <= x0 or y1 <= y0:
+            return
+        patch = frame[y0:y1, x0:x1]
+        zoom_w = (x1 - x0) * int(zoom)
+        zoom_h = (y1 - y0) * int(zoom)
+        zoom_patch = cv.resize(patch, (zoom_w, zoom_h), interpolation=cv.INTER_NEAREST)
+        pos_x = x + 20
+        pos_y = y + 20
+        if pos_x + zoom_w > w:
+            pos_x = x - 20 - zoom_w
+        if pos_y + zoom_h > h:
+            pos_y = y - 20 - zoom_h
+        pos_x = max(0, pos_x)
+        pos_y = max(0, pos_y)
+        frame[pos_y:pos_y + zoom_h, pos_x:pos_x + zoom_w] = zoom_patch
+        cv.rectangle(frame, (pos_x - 1, pos_y - 1), (pos_x + zoom_w + 1, pos_y + zoom_h + 1),
+                     (50, 200, 255), 1)
+        cx = int(round((x - x0) * int(zoom)))
+        cy = int(round((y - y0) * int(zoom)))
+        cv.drawMarker(frame, (pos_x + cx, pos_y + cy), (0, 255, 255),
+                      markerType=cv.MARKER_CROSS, markerSize=12, thickness=1)
 
-    viz = image.copy()
+    def _redraw(x: int = -1, y: int = -1) -> None:
+        frame = image.copy()
+        cv.putText(frame, f"Pick {int(count)} points  [ESC退出]  ({len(picked)}/{int(count)})",
+                   (10, 28), cv.FONT_HERSHEY_SIMPLEX, 0.7, (230, 230, 230), 2, cv.LINE_AA)
+        for (px, py) in picked:
+            cv.drawMarker(frame, (int(px), int(py)), (0, 255, 255), markerType=cv.MARKER_CROSS, markerSize=12, thickness=2)
+            cv.circle(frame, (int(px), int(py)), 3, (0, 255, 255), -1)
+        if x >= 0 and y >= 0:
+            cv.drawMarker(frame, (x, y), (0, 200, 255), markerType=cv.MARKER_CROSS, markerSize=10, thickness=1)
+            _overlay_magnifier(frame, x, y, zoom=3, half_size=20)
+        cv.imshow(win_name, frame)
+
+    def _on_mouse(event, x, y, flags, param):
+        if event == cv.EVENT_MOUSEMOVE:
+            _redraw(x, y)
+        elif event == cv.EVENT_LBUTTONDOWN:
+            picked.append([x, y])
+            _redraw(x, y)
+
     cv.namedWindow(win_name, cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO)
-    cv.imshow(win_name, viz)
-    cv.setMouseCallback(win_name, _on_mouse, viz)
+    cv.resizeWindow(win_name, image.shape[1], image.shape[0])
+    _redraw()
+    cv.setMouseCallback(win_name, _on_mouse, None)
 
     while len(picked) < int(count):
         if cv.waitKey(10) & 0xFF == 27:  # ESC 退出
@@ -179,7 +231,7 @@ def _pick_and_print_world_points(image: np.ndarray,
 
     # 像素 -> 相机视线；再旋转到世界系（行向量实现 v_w = v_c @ R）
     rays_cam = camera.cam2world(uv.copy())  # Nx3 单位向量
-    rays_w = rays_cam @ R  # 旋转到世界系
+    rays_w = rays_cam @ R  # 旋转到世界系（行向量实现 v_w = v_c R = (R^T v_c)^T）
 
     vz = rays_w[:, 2]
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -248,68 +300,93 @@ def _default_board_to_world(
     right_xy: Optional[Tuple[float, float]] = None,
     back_xy: Optional[Tuple[float, float]] = None,
     left_xy: Optional[Tuple[float, float]] = None,
+    *,
+    chessboard_size_row: int,
+    square_size: float,
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """
     生成四块棋盘相对于“世界坐标系(front 棋盘)”的刚体变换（R_w_b, t_w_b）。
 
     - 姿态（R_w_b）：固定为 front=I，right 绕 Z 轴 -90°，back -180°，left -270°（顺时针）。
     - 平移（t_w_b）：
-        - 若提供测量坐标 right_xy/back_xy/left_xy，则分别使用 [x, y, 0].
+        - 若提供测量坐标 right_xy/back_xy/left_xy，则分别使用 [x, y, 0]；
+        - 否则，按“行内角点个数 * square_size”作为相邻棋盘中心在 world 系的固定间隔：
+            right -> ( +gap, 0, 0 )；back -> ( 0, -gap, 0 )；left -> ( -gap, 0, 0 )。
 
     参数单位：所有长度（square_size、right_xy 等）保持一致，例如毫米。
     """
 
-    def _t_xy(xy_opt: Optional[Tuple[float, float]]) -> np.ndarray:
+    def _t_xy(xy_opt: Optional[Tuple[float, float]], fallback: Tuple[float, float]) -> np.ndarray:
         if xy_opt is not None:
             x, y = float(xy_opt[0]), float(xy_opt[1])
-            return np.array([x, y, 0.0], dtype=np.float64)
+        else:
+            x, y = float(fallback[0]), float(fallback[1])
+        return np.array([x, y, 0.0], dtype=np.float64)
 
+    gap = float(int(chessboard_size_row)) * float(square_size)
     return {
         "front": (np.eye(3, dtype=np.float64), np.array([0.0, 0.0, 0.0], dtype=np.float64)),
-        "right": (rotz(-90.0), _t_xy(right_xy)),
-        "back":  (rotz(-180.0), _t_xy(back_xy)),
-        "left":  (rotz(-270.0), _t_xy(left_xy)),
+        "right": (rotz(-90.0), np.array([right_xy[0], right_xy[1], 0.0], dtype=np.float64)),
+        "back":  (rotz(-180.0), np.array([back_xy[0], back_xy[1], 0.0], dtype=np.float64)),
+        "left":  (rotz(-270.0), np.array([left_xy[0], left_xy[1], 0.0], dtype=np.float64)),
     }
 
 
+def _resolve_image_files(images_dir: Path) -> Dict[str, Path]:
+    """从目录中解析 front/right/back/left 的棋盘图像路径（.jpg）。
+
+    规则：文件名以 front/right/back/left 开头，后缀为 .jpg（不区分大小写）。
+    同一前缀若匹配到多张，取字典序第一张；若缺失则报错。
+    """
+    if not images_dir.is_dir():
+        raise typer.BadParameter(f"图像目录不存在: {images_dir}")
+    keys = ["front", "right", "back", "left"]
+    out: Dict[str, Path] = {}
+    files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.JPG")))
+    name_map = {}
+    for p in files:
+        name_map.setdefault(p.name.lower(), p)
+    for k in keys:
+        candidates = [p for p in files if p.name.lower().startswith(k)]
+        if not candidates:
+            raise typer.BadParameter(f"目录 {images_dir} 下未找到以 '{k}' 开头且以 .jpg 结尾的图像")
+        out[k] = sorted(candidates)[0]
+    return out
+
+
+"""
+python src/pyocamcalib/script/associate_extrinsic_calib.py ./test_images/usb_cameras_001
+"""
 @app.command()
 def main(
     # 内参：支持目录匹配或分别指定
-    calib_dir: Optional[Path] = typer.Option(None, help="包含四路相机内参 JSON 的目录（按 front/right/back/left 关键字匹配）"),
+    calib_dir: Optional[Path] = typer.Option("src/pyocamcalib/checkpoints/usb_cameras", help="包含四路相机内参 JSON 的目录（按 front/right/back/left 关键字匹配）"),
     calib_front: Optional[Path] = typer.Option(None, help="front 相机内参 JSON 路径"),
     calib_right: Optional[Path] = typer.Option(None, help="right 相机内参 JSON 路径"),
     calib_back: Optional[Path] = typer.Option(None, help="back 相机内参 JSON 路径"),
     calib_left: Optional[Path] = typer.Option(None, help="left 相机内参 JSON 路径"),
 
-    # 图像：四张单次采集的棋盘图
-    img_front: Path = typer.Argument(..., help="front 相机棋盘图像"),
-    img_right: Path = typer.Argument(..., help="right 相机棋盘图像"),
-    img_back: Path = typer.Argument(..., help="back 相机棋盘图像"),
-    img_left: Path = typer.Argument(..., help="left 相机棋盘图像"),
+    # 图像：提供包含四张图像的目录（文件名以 front/right/back/left 开头，并以 .jpg 结尾）
+    images_dir: Path = typer.Argument(..., help="包含四张图像的目录（front/right/back/left*.jpg）"),
 
     # 棋盘参数
     chessboard_size_row: int = typer.Option(6, help="棋盘内角点沿行方向个数"),
     chessboard_size_column: int = typer.Option(4, help="棋盘内角点沿列方向个数"),
-    square_size: float = typer.Option(200.0, help="棋盘单元大小（与 t 的单位一致）"),
-    gap_squares: float = typer.Option(None, help="棋盘之间中心间隔（单位：格），默认取 chessboard_size_row"),
+    square_size: float = typer.Option(30.0, help="棋盘单元大小（与 t 的单位一致）"),
 
     # 可视化与调试
-    axis_length: float = typer.Option(20.0, help="坐标轴长度（单位：格）用于叠加图"),
+    axis_length: float = typer.Option(3.0, help="坐标轴长度（单位：格）用于叠加图"),
     output_dir: Path = typer.Option(Path("./outputs"), help="输出叠加图目录"),
-    checkpoints_dir: Path = typer.Option(Path("src/pyocamcalib/checkpoints/calibration"), help="保存联合外参 JSON 的目录"),
-    depth_prior: Optional[float] = typer.Option(1200.0, help="弱深度先验 tz（与 square_size 同单位），None 表示关闭"),
-    depth_weight: float = typer.Option(200.0, help="弱先验权重，0 表示不使用"),
-    # 测量得到的 right/back/left 棋盘原点在 front 参考坐标中的 (x, y)
-    right_xy: Optional[Tuple[float, float]] = typer.Option(None, help="right 棋盘原点在 front-世界坐标中的 (x, y)"),
-    back_xy: Optional[Tuple[float, float]] = typer.Option(None, help="back 棋盘原点在 front-世界坐标中的 (x, y)"),
-    left_xy: Optional[Tuple[float, float]] = typer.Option(None, help="left 棋盘原点在 front-世界坐标中的 (x, y)"),
+    checkpoints_dir: Path = typer.Option(Path("outputs/assosicate"), help="保存联合外参 JSON 的目录"),
+    depth_prior: Optional[float] = typer.Option(None, help="弱深度先验 tz（与 square_size 同单位），None 表示关闭"),
+    depth_weight: float = typer.Option(0.0, help="弱先验权重，0 表示不使用"),
+    
     show: bool = typer.Option(False, help="是否弹窗显示可视化结果（调试）"),
     debug: bool = typer.Option(False, help="打印详细调试信息"),
-    verify: bool = typer.Option(True, help="联合标定后交互拾取每路 8 个像素点并输出世界坐标"),
+    verify: bool = typer.Option(False, help="联合标定后交互拾取每路 8 个像素点并输出世界坐标"),
 ):
     """四路相机联合外参标定入口。"""
-    if gap_squares is None:
-        gap_squares = float(chessboard_size_row)
+    # 固定使用“行内角点个数 * square_size”作为相邻棋盘中心的间隔，不再从命令行传入。
 
     # 解析内参文件
     calib_map = _resolve_calibration_files(calib_dir, calib_front, calib_right, calib_back, calib_left)
@@ -317,15 +394,16 @@ def main(
 
     # 统一参数
     chessboard_size = (int(chessboard_size_row), int(chessboard_size_column))
-    image_map: Dict[str, Path] = {
-        "front": img_front,
-        "right": img_right,
-        "back": img_back,
-        "left": img_left,
-    }
+    image_map: Dict[str, Path] = _resolve_image_files(images_dir)
 
     # 预定义“棋盘->世界”刚体变换（R_w_b, t_w_b）
-    Twb = _default_board_to_world(right_xy=right_xy, back_xy=back_xy, left_xy=left_xy)
+    Twb = _default_board_to_world(
+        right_xy=DEFAULT_RIGHT_XY,
+        back_xy=DEFAULT_BACK_XY,
+        left_xy=DEFAULT_LEFT_XY,
+        chessboard_size_row=int(chessboard_size_row),
+        square_size=float(square_size),
+    )
 
     # 逐相机：检测角点 -> 估计 (棋盘->相机) 外参 -> 转到 (世界->相机)
     results = {}
@@ -333,6 +411,7 @@ def main(
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     for key in ("front", "right", "back", "left"):
+        print(f"Calib {key}")
         img_path = image_map[key]
         if not Path(img_path).is_file():
             raise typer.BadParameter(f"图像不存在: {key} -> {img_path}")
@@ -407,7 +486,6 @@ def main(
         json.dump({
             "square_size": float(square_size),
             "chessboard_size": [int(chessboard_size_row), int(chessboard_size_column)],
-            "gap_squares": float(gap_squares),
             "board2world": {
                 k: {"R_w_b": Twb[k][0].tolist(), "t_w_b": Twb[k][1].tolist()} for k in ("front", "right", "back", "left")
             },
