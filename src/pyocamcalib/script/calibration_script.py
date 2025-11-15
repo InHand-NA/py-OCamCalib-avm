@@ -22,8 +22,8 @@ import time
 
 
 def main(working_dir: str,
-         chessboard_size_row: int,
          chessboard_size_column: int,
+         chessboard_size_row: int,
          corners_path: str = None,
          check: bool = False,
          camera_name: str = "MyCamera",
@@ -43,7 +43,7 @@ def main(working_dir: str,
     :return:
     """
 
-    chessboard_size = (chessboard_size_row, chessboard_size_column)
+    chessboard_size = (chessboard_size_column, chessboard_size_row)
     my_calib_engine = CalibrationEngine(working_dir, chessboard_size, camera_name, square_size)
 
     if corners_path is None:

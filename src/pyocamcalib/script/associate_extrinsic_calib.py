@@ -320,7 +320,7 @@ def _resolve_image_files(images_dir: Path) -> Dict[str, Path]:
 
 
 """
-python src/pyocamcalib/script/associate_extrinsic_calib.py ./test_images/usb_cameras_001
+python src/pyocamcalib/script/associate_extrinsic_calib.py ./test_images/usb_cameras_002
 """
 @app.command()
 def main(

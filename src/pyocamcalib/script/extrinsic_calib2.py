@@ -284,7 +284,7 @@ def _draw_axes(image: np.ndarray,
     cv.line(overlay, origin, z_axis, (255, 0, 0), 2)
     cv.putText(overlay, "X", (x_axis[0] + 5, x_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv.LINE_AA)
     cv.putText(overlay, "Y", (y_axis[0] + 5, y_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
-    cv.putText(overlay, "Z", (z_axis[0] + 5, z_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv.LINE_AA)
+    cv.putText(overlay, "-Z", (z_axis[0] + 5, z_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv.LINE_AA)
     return overlay
 
 
