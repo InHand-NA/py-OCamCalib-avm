@@ -343,7 +343,7 @@ def main(
     
     show: bool = typer.Option(False, help="是否弹窗显示可视化结果（调试）"),
     debug: bool = typer.Option(False, help="打印详细调试信息"),
-    verify: bool = typer.Option(True, help="联合标定后交互拾取每路 8 个像素点并输出世界坐标"),
+    verify: bool = typer.Option(False, help="联合标定后交互拾取每路 8 个像素点并输出世界坐标"),
 ):
     """四路相机联合外参标定入口。"""
     # 固定使用“行内角点个数 * square_size”作为相邻棋盘中心的间隔，不再从命令行传入。
@@ -403,6 +403,11 @@ def main(
         roll, pitch, yaw = rpy_from_R(R_wc)
 
         Rt_wc = np.hstack([R_wc, t_wc.reshape(3, 1)])
+        # 同时计算 cam->world 外参：R_cw = R_wc^T, t_cw = -R_wc^T t_wc
+        R_cw = R_wc.T
+        t_cw = -R_cw @ t_wc
+        r_cw, p_cw, y_cw = rpy_from_R(R_cw)
+        Rt_cw = np.hstack([R_cw, t_cw.reshape(3, 1)])
         results[key] = {
             "rms_px": float(rms_px),
             "board2cam": {
@@ -414,6 +419,11 @@ def main(
                 "Rt": Rt_wc.tolist(),
                 "xyz": t_wc.tolist(),
                 "rpy_deg": [float(roll), float(pitch), float(yaw)],
+            },
+            "cam2world": {
+                "Rt": Rt_cw.tolist(),
+                "xyz": t_cw.tolist(),
+                "rpy_deg": [float(r_cw), float(p_cw), float(y_cw)],
             }
         }
 
