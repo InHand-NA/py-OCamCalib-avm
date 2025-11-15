@@ -356,6 +356,9 @@ def main(
     chessboard_size = (int(chessboard_size_column), int(chessboard_size_row))
     image_map: Dict[str, Path] = _resolve_image_files(images_dir)
 
+    # 将联合标定结果输出到子目录：<checkpoints_dir>/<images_dir.name>
+    checkpoints_dir = checkpoints_dir / images_dir.name
+
     # 预定义“世界->棋盘”刚体变换（R_wb, t_wb）
     Twb = _default_world2boards(
         right_xy=DEFAULT_RIGHT_XY,
@@ -433,6 +436,67 @@ def main(
         # 交互验证：拾取 8 个像素点，打印世界坐标（Z=0 平面交点）
         if verify:
             _pick_and_print_world_points(engine.image, camera, Rt_wc, count=4, win_name=f"pick-{key}")
+
+        # 导出 TXT: 相机内参 + cam2world 外参（输出到 checkpoints_dir，例如 outputs/assosicate）
+        calib_txt_dir = checkpoints_dir
+        calib_txt_dir.mkdir(parents=True, exist_ok=True)
+
+        cam_name = camera.name if getattr(camera, 'name', None) else key
+        # 1) 内参 TXT（复用 ocam 格式字段）
+        try:
+            height, width = engine.image.shape[:2]
+            direct_poly = np.asarray(camera.taylor_coefficient).ravel()
+            inverse_poly = np.asarray(camera.inverse_poly).ravel()
+            center_col, center_row = float(camera.distortion_center[0]), float(camera.distortion_center[1])
+            stretch = np.asarray(camera.stretch_matrix, dtype=float)
+            c_param = float(stretch[0, 0])
+            d_param = float(stretch[0, 1])
+            e_param = float(stretch[1, 0])
+            fx = c_param * (width / 2.0)
+            fy = float(stretch[1, 1]) * (height / 2.0)
+            intrinsic_matrix_line = f"{fx:.9g} 0 {center_col:.9g} 0 {fy:.9g} {center_row:.9g} 0 0 1 \n"
+
+            def _format_coefficients(coeffs: np.ndarray) -> str:
+                return f"{coeffs.shape[0]} " + " ".join(f"{v:.9g}" for v in coeffs) + " \n"
+
+            intr_lines = [
+                "\n#polynomial coefficients for the DIRECT mapping function (ocam_model.ss in MATLAB). These are used by cam2world\n\n",
+                _format_coefficients(direct_poly),
+                '#polynomial coefficients for the inverse mapping function (ocam_model.invpol in MATLAB). These are used by world2cam\n\n',
+                _format_coefficients(inverse_poly),
+                '\n#center: "row" and "column", starting from 0 (C convention)\n\n',
+                f"{center_row:.9g} {center_col:.9g}\n\n",
+                '#affine parameters "c", "d", "e"\n\n',
+                f"{c_param:.9g} {d_param:.9g} {e_param:.9g}\n\n",
+                '#image size: "height" and "width"\n\n',
+                f"{height} {width}\n\n",
+                '#camera Intrinsic parmeters: <fx 0 cx, 0 fy cy, 0 0 1>\n\n',
+                intrinsic_matrix_line,
+            ]
+            intr_path = calib_txt_dir / f"ocamcalib_intrinsic_{cam_name}.txt"
+            with open(intr_path, 'w', encoding='utf-8') as f_txt:
+                f_txt.writelines(intr_lines)
+        except Exception as e:
+            logger.warning(f"导出内参 TXT 失败 ({cam_name}): {e}")
+
+        # 2) cam2world 外参 TXT（描述相机在世界坐标中的位姿）
+        try:
+            roll_cw, pitch_cw, yaw_cw = r_cw, p_cw, y_cw
+            lines = []
+            lines.append(f"{img_path}:\n")
+            lines.append("translation (units)\n")
+            lines.append(f"  {t_cw[0]:.9g}        # trans_x\n")
+            lines.append(f"  {t_cw[1]:.9g}        # trans_y\n")
+            lines.append(f"  {t_cw[2]:.9g}        # trans_z\n")
+            lines.append("rotation (degree)\n")
+            lines.append(f"  {roll_cw:.9g}        # roll\n")
+            lines.append(f"  {pitch_cw:.9g}        # pitch\n")
+            lines.append(f"  {yaw_cw:.9g}        # yaw\n\n")
+            extr_path_txt = calib_txt_dir / f"ocamcalib_extrinsic_{cam_name}.txt"
+            with open(extr_path_txt, 'w', encoding='utf-8') as f_txt:
+                f_txt.writelines(lines)
+        except Exception as e:
+            logger.warning(f"导出外参 TXT 失败 ({cam_name}): {e}")
 
     # 弹窗展示
     if show:
