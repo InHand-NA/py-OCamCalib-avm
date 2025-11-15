@@ -319,6 +319,60 @@ def _resolve_image_files(images_dir: Path) -> Dict[str, Path]:
     return out
 
 
+
+
+def get_camera_center(camera_params) -> Tuple[float, float, float]:
+    """根据外参标定结果，计算 4 个相机在世界坐标系下的平面中心点。
+
+    期望输入格式与本脚本导出的联合外参 JSON 一致：
+
+    - ``camera_params`` 可以是完整 JSON 字典，包含 ``"cameras"`` 键；
+      也可以直接是 ``{front/right/back/left: {...}}`` 的相机字典。
+    - 每个相机条目应包含 ``"cam2world"`` 子字典，且其中 ``"xyz"`` 为长度为 3
+      的可迭代对象，对应相机在世界坐标中的平移 ``(x, y, z)``。
+
+    返回值为所有相机中心在世界坐标系 X-Y 平面的算术平均值 ``(center_x, center_y)``。
+    """
+
+    # 传入标定的results
+    cams = camera_params
+
+    # 收集每个相机在世界坐标系下的 (x, y)
+    front_xyz = cams["front"]["cam2world"]["xyz"]
+    right_xyz = cams["right"]["cam2world"]["xyz"]
+    back_xyz = cams["back"]["cam2world"]["xyz"]
+    left_xyz = cams["left"]["cam2world"]["xyz"]
+
+    center_x = (right_xyz[0] + left_xyz[0]) / 2.0
+    center_y = (front_xyz[1] + back_xyz[1]) / 2.0
+    center_z = 0.0
+    return float(center_x), float(center_y), float(center_z)
+
+
+def get_ego2world(camera_params):
+    """计算ego坐标到世界坐标的转换矩阵。
+    ego坐标定义：
+    - 原点：4个相机的中心，z=0.
+    - x轴正方向： world坐标系Y轴负方向;
+    - y轴正方向： world坐标系X轴负方向;
+    - z轴正方向： world坐标系Z轴负方向;
+    """
+    camera_center_xyz = get_camera_center(camera_params)
+
+    # ego 坐标轴相对于世界坐标轴的朝向：
+    # x_e -> -y_w, y_e -> -x_w, z_e -> -z_w
+    R_ew = np.array(
+        [
+            [0.0, -1.0, 0.0],   # e_x, e_y, e_z 在 world x 分量
+            [-1.0, 0.0, 0.0],   # 对应的 world y 分量
+            [0.0, 0.0, -1.0],   # 对应的 world z 分量
+        ],
+        dtype=np.float64,
+    )
+    t_ew = np.array(camera_center_xyz, dtype=np.float64)
+
+    return R_ew, t_ew
+
 """
 python src/pyocamcalib/script/associate_extrinsic_calib.py ./test_images/usb_cameras_003
 """
@@ -413,6 +467,7 @@ def main(
         Rt_cw = np.hstack([R_cw, t_cw.reshape(3, 1)])
         results[key] = {
             "rms_px": float(rms_px),
+            "image_path": str(img_path),
             "board2cam": {
                 "Rt": Rt_bc.tolist(),
                 "xyz": t_bc.tolist(),
@@ -437,7 +492,7 @@ def main(
         if verify:
             _pick_and_print_world_points(engine.image, camera, Rt_wc, count=4, win_name=f"pick-{key}")
 
-        # 导出 TXT: 相机内参 + cam2world 外参（输出到 checkpoints_dir，例如 outputs/assosicate）
+        # 导出 TXT: 相机内参（输出到 checkpoints_dir，例如 outputs/assosicate）
         calib_txt_dir = checkpoints_dir
         calib_txt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -479,24 +534,7 @@ def main(
         except Exception as e:
             logger.warning(f"导出内参 TXT 失败 ({cam_name}): {e}")
 
-        # 2) cam2world 外参 TXT（描述相机在世界坐标中的位姿）
-        try:
-            roll_cw, pitch_cw, yaw_cw = r_cw, p_cw, y_cw
-            lines = []
-            lines.append(f"{img_path}:\n")
-            lines.append("translation (units)\n")
-            lines.append(f"  {t_cw[0]:.9g}        # trans_x\n")
-            lines.append(f"  {t_cw[1]:.9g}        # trans_y\n")
-            lines.append(f"  {t_cw[2]:.9g}        # trans_z\n")
-            lines.append("rotation (degree)\n")
-            lines.append(f"  {roll_cw:.9g}        # roll\n")
-            lines.append(f"  {pitch_cw:.9g}        # pitch\n")
-            lines.append(f"  {yaw_cw:.9g}        # yaw\n\n")
-            extr_path_txt = calib_txt_dir / f"ocamcalib_extrinsic_{cam_name}.txt"
-            with open(extr_path_txt, 'w', encoding='utf-8') as f_txt:
-                f_txt.writelines(lines)
-        except Exception as e:
-            logger.warning(f"导出外参 TXT 失败 ({cam_name}): {e}")
+        # 外参 TXT 在联合标定完成后统一按 cam2ego 写出
 
     # 弹窗展示
     if show:
@@ -508,6 +546,65 @@ def main(
             except Exception:
                 pass
 
+    # 计算 ego 坐标到世界坐标的变换，以及每个相机的 ego->cam 外参
+    R_ew, t_ew = get_ego2world(results)
+    R_ew = np.asarray(R_ew, dtype=np.float64).reshape(3, 3)
+    t_ew = np.asarray(t_ew, dtype=np.float64).reshape(3)
+
+    # 计算每个相机的 ego->cam 与 cam->ego，并导出 cam2ego 外参 TXT
+    calib_txt_dir = checkpoints_dir
+    calib_txt_dir.mkdir(parents=True, exist_ok=True)
+
+    for key, cam_info in results.items():
+        Rt_wc = np.asarray(cam_info["world2cam"]["Rt"], dtype=np.float64)
+        R_wc = Rt_wc[:, :3]
+        t_wc = Rt_wc[:, 3]
+
+        # ego -> cam: X_c = R_wc (R_ew X_e + t_ew) + t_wc
+        R_ec = R_wc @ R_ew
+        t_ec = R_wc @ t_ew + t_wc
+        Rt_ec = np.hstack([R_ec, t_ec.reshape(3, 1)])
+        r_ec, p_ec, y_ec = rpy_from_R(R_ec)
+
+        cam_info["ego2cam"] = {
+            "Rt": Rt_ec.tolist(),
+            "xyz": t_ec.tolist(),
+            "rpy_deg": [float(r_ec), float(p_ec), float(y_ec)],
+        }
+
+        # cam -> ego: 取 ego->cam 的逆变换
+        R_ce = R_ec.T
+        t_ce = -R_ce @ t_ec
+        Rt_ce = np.hstack([R_ce, t_ce.reshape(3, 1)])
+        r_ce, p_ce, y_ce = rpy_from_R(R_ce)
+
+        cam_info["cam2ego"] = {
+            "Rt": Rt_ce.tolist(),
+            "xyz": t_ce.tolist(),
+            "rpy_deg": [float(r_ce), float(p_ce), float(y_ce)],
+        }
+
+        # 3) cam2ego 外参 TXT（描述相机在 ego 坐标中的位姿）
+        try:
+            cam = cam_map[key]
+            cam_name = cam.name if getattr(cam, 'name', None) else key
+            img_path = cam_info.get("image_path", "")
+            lines = []
+            lines.append(f"{img_path}:\n")
+            lines.append("translation (units)\n")
+            lines.append(f"  {t_ce[0]:.9g}        # trans_x\n")
+            lines.append(f"  {t_ce[1]:.9g}        # trans_y\n")
+            lines.append(f"  {t_ce[2]:.9g}        # trans_z\n")
+            lines.append("rotation (degree)\n")
+            lines.append(f"  {r_ce:.9g}        # roll\n")
+            lines.append(f"  {p_ce:.9g}        # pitch\n")
+            lines.append(f"  {y_ce:.9g}        # yaw\n\n")
+            extr_path_txt = calib_txt_dir / f"ocamcalib_extrinsic_{cam_name}.txt"
+            with open(extr_path_txt, 'w', encoding='utf-8') as f_txt:
+                f_txt.writelines(lines)
+        except Exception as e:
+            logger.warning(f"导出 cam2ego 外参 TXT 失败 ({key}): {e}")
+
     # 保存联合外参 JSON
     ts = time.strftime("%Y%m%d_%H%M%S")
     extr_path = checkpoints_dir / f"avm_extrinsics_{ts}.json"
@@ -517,6 +614,10 @@ def main(
             "chessboard_size": chessboard_size,
             "world2board": {
                 k: {"R_wb": Twb[k][0].tolist(), "t_wb": Twb[k][1].tolist()} for k in ("front", "right", "back", "left")
+            },
+            "ego2world": {
+                "R_ew": R_ew.tolist(),
+                "t_ew": t_ew.tolist(),
             },
             "cameras": results,
         }, f, ensure_ascii=False, indent=2)
