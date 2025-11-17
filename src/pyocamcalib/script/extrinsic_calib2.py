@@ -273,7 +273,8 @@ def _draw_axes(image: np.ndarray,
         [0.0, axis_extent, 0.0],
         [0.0, 0.0, -axis_extent], # z轴取反只是为了视觉效果更直观，实际坐标系还是右手坐标系。
     ])
-    projected = np.round(camera.world2cam(axis_points, extrinsic)).astype(int)
+    #projected = np.round(camera.world2cam(axis_points, extrinsic)).astype(int)
+    projected = np.round(camera.world2cam_fast(axis_points, extrinsic)).astype(int)
     origin = tuple(projected[0])
     x_axis = tuple(projected[1])
     y_axis = tuple(projected[2])
@@ -286,6 +287,52 @@ def _draw_axes(image: np.ndarray,
     cv.putText(overlay, "Y", (y_axis[0] + 5, y_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv.LINE_AA)
     cv.putText(overlay, "-Z", (z_axis[0] + 5, z_axis[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv.LINE_AA)
     return overlay
+
+
+def eval_world2cam_fast():
+    """评估world2cam()和world2cam_fast()两个方法的误差。
+    """
+    cam = globals().get("_LAST_CAMERA", None)
+    if cam is None or not isinstance(cam, Camera):
+        logger.error("eval_world2cam_fast requires a loaded Camera (run main first).")
+        return
+
+    # 在相机坐标系前方随机采样一批 3D 点（z>0）
+    rng = np.random.default_rng(0)
+    n_samples = 5000
+    x = rng.uniform(-300.0, 300.0, n_samples)
+    y = rng.uniform(-1000.0, 300.0, n_samples)
+    z = rng.uniform(0.1, 500.0, n_samples)
+    world_points = np.stack((x, y, z), axis=1).astype(np.float64)
+
+    t0 = time.perf_counter()
+    uv_ref = cam.world2cam(world_points.copy())
+    t1 = time.perf_counter()
+    uv_fast = cam.world2cam_fast(world_points)
+    t2 = time.perf_counter()
+
+    # 只统计有限值样本
+    valid = (
+        np.isfinite(uv_ref).all(axis=1) &
+        np.isfinite(uv_fast).all(axis=1)
+    )
+    if not np.any(valid):
+        typer.echo("No valid samples to compare between world2cam and world2cam_fast.")
+        return
+
+    diff = uv_fast[valid] - uv_ref[valid]
+    err = np.linalg.norm(diff, axis=1)
+
+    typer.echo(f"[eval_world2cam_fast] samples={valid.sum()}")
+    typer.echo(
+        f"world2cam time     : {(t1 - t0) * 1e3:.3f} ms\n"
+        f"world2cam_fast time: {(t2 - t1) * 1e3:.3f} ms"
+    )
+    typer.echo(
+        "Pixel error (fast vs ref): "
+        f"mean={err.mean():.6f}, median={np.median(err):.6f}, "
+        f"max={err.max():.6f}, p99={np.quantile(err, 0.99):.6f}"
+    )
 
 
 def eval_extrinsic():
@@ -530,7 +577,8 @@ def main(
     globals()["_LAST_CAMERA"] = camera
     globals()["_LAST_IMAGE"] = my_calib_engine.image
     globals()["_LAST_EXTRINSIC"] = extrinsic_1
-    eval_extrinsic()
+    #eval_extrinsic()
+    eval_world2cam_fast()
 
 
 if __name__ == "__main__":

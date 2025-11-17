@@ -171,8 +171,8 @@ class Camera:
         world_points[id_u, id_v] = np.finfo(float).eps
 
         nb_points = world_points.shape[0]
-        world_radius = np.sqrt(world_points[:, 0] ** 2 + world_points[:, 1] ** 2)
-        z_scaled = world_points[:, 2] / world_radius
+        world_radius = np.sqrt(world_points[:, 0] ** 2 + world_points[:, 1] ** 2) # r
+        z_scaled = world_points[:, 2] / world_radius # # ≈ tan(theta) 但不是直接 tan
 
         rho = []
         for i in range(nb_points):

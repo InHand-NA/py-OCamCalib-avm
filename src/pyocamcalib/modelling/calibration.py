@@ -76,6 +76,7 @@ class CalibrationEngine:
         logger.info(f"Start corners extraction: {images_path}")
 
         for img_f in tqdm(sorted(images_path)):
+            detected = False
             img = cv.imread(str(img_f))
             print(f"Handle img file: {str(img_f)}")
             cv.imshow('raw img', img)
@@ -112,7 +113,11 @@ class CalibrationEngine:
                     count += 1
                     self.detections[str(img_f)] = {"image_points": np.squeeze(corners)[::-1],
                                                    "world_points": np.squeeze(world_points)}
+                    detected = True
                     break
+
+            if not detected:
+                logger.warning(f"Fail to detect corners on image {str(img_f)}")
 
         logger.info(f"Extracted chessboard corners with success = {count}/{len(images_path)}")
 
@@ -229,7 +234,9 @@ class CalibrationEngine:
         plt.legend()
         if save:
             plt.savefig(f"./docs/Mean_reprojection_error_{self.cam_name}.png", dpi=300)
-        plt.show()
+        # plt.show()
+
+        plt.close()
 
     def show_reprojection(self):
 
@@ -272,7 +279,8 @@ class CalibrationEngine:
                 plt.legend()
 
                 plt.savefig(f"./docs/Linear_estimate_solution_{self.cam_name}.png", dpi=300)
-                plt.show()
+                # plt.show()
+                plt.close()
                 counter += 1
 
     def show_model_projection(self):
@@ -323,7 +331,8 @@ class CalibrationEngine:
         plt.ylim([0, 1])
         plt.legend()
         plt.savefig(f"./docs/Model_projection_{self.cam_name}.png", dpi=300)
-        plt.show()
+        # plt.show()
+        plt.close()
 
         return r_calibrated, theta
 
@@ -350,118 +359,6 @@ class CalibrationEngine:
 
         with open(f'./src/pyocamcalib/checkpoints/calibration/calibration_{self.cam_name}_{dt_string}.json', 'w') as f:
             json.dump(outputs, f, indent=4)
-
-        self.save_intrinsic_txt()
-        self.save_extrinsic_txt()
-
-    def save_intrinsic_txt(self):
-        if any(v is None for v in (self.taylor_coefficient, self.distortion_center, self.stretch_matrix)):
-            raise ValueError("Camera parameters incomplete. Calibrate the camera before exporting intrinsics.")
-
-        if self.inverse_poly is None:
-            raise ValueError("Inverse polynomial not computed. Call 'find_poly_inv' before exporting intrinsics.")
-
-        height = int(self.sensor_size[1])
-        width = int(self.sensor_size[0])
-        center_row = float(self.distortion_center[1])
-        center_col = float(self.distortion_center[0])
-        stretch = np.asarray(self.stretch_matrix, dtype=float)
-        inverse_poly = np.asarray(self.inverse_poly, dtype=float).flatten()
-        direct_poly = np.asarray(self.taylor_coefficient, dtype=float).flatten()[::-1]
-
-        # Approximate perspective intrinsics for compatibility with tooling expecting a pinhole model.
-        fx = stretch[0, 0] * (width / 2)
-        fy = stretch[1, 1] * (height / 2)
-        cx = center_col
-        cy = center_row
-
-        def format_coefficients(coeffs: np.ndarray) -> str:
-            formatted = " ".join(f"{coef:.9g}" for coef in coeffs)
-            return f"{coeffs.shape[0]} {formatted} \n"
-
-        c_param = stretch[0, 0]
-        d_param = stretch[0, 1]
-        e_param = stretch[1, 0]
-
-        intrinsic_matrix_line = f"{fx:.9g} 0 {cx:.9g} 0 {fy:.9g} {cy:.9g} 0 0 1 \n"
-
-        content = [
-            '\n#polynomial coefficients for the DIRECT mapping function (ocam_model.ss in MATLAB). These are used by cam2world\n\n',
-            format_coefficients(direct_poly),
-            '#polynomial coefficients for the inverse mapping function (ocam_model.invpol in MATLAB). These are used by world2cam\n\n',
-            format_coefficients(inverse_poly),
-            '\n#center: "row" and "column", starting from 0 (C convention)\n\n',
-            f"{center_row:.9g} {center_col:.9g}\n\n",
-            '#affine parameters "c", "d", "e"\n\n',
-            f"{c_param:.9g} {d_param:.9g} {e_param:.9g}\n\n",
-            '#image size: "height" and "width"\n\n',
-            f"{height} {width}\n\n",            
-            '#camera Intrinsic parmeters: <fx 0 cx, 0 fy cy, 0 0 1>\n\n',
-            intrinsic_matrix_line,
-        ]
-
-        output_path = Path(f'./src/pyocamcalib/checkpoints/calibration/ocamcalib_intrinsic_{self.cam_name}.txt')
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as file:
-            file.writelines(content)
-
-        logger.info(f"Intrinsic file exported to {output_path}")
-
-    def save_extrinsic_txt(self):
-        if self.extrinsics_t is None or not len(self.extrinsics_t):
-            raise ValueError("Extrinsic parameters are empty. Calibrate the camera before exporting.")
-
-        if not self.detections:
-            raise ValueError("Detections dictionary missing. Load detections before exporting extrinsics.")
-
-        if self.valid_pattern is None:
-            raise ValueError("Valid pattern unavailable. Run calibration to populate it.")
-
-        valid_count = sum(self.valid_pattern)
-        if valid_count != len(self.extrinsics_t):
-            raise ValueError("Mismatch between valid detections and available extrinsics.")
-
-        def rotation_matrix_to_euler(rot: np.ndarray) -> np.ndarray:
-            sy = np.sqrt(rot[0, 0] ** 2 + rot[1, 0] ** 2)
-            singular = sy < 1e-9
-            if not singular:
-                roll = np.arctan2(rot[2, 1], rot[2, 2])
-                pitch = np.arctan2(-rot[2, 0], sy)
-                yaw = np.arctan2(rot[1, 0], rot[0, 0])
-            else:
-                roll = np.arctan2(-rot[1, 2], rot[1, 1])
-                pitch = np.arctan2(-rot[2, 0], sy)
-                yaw = 0.0
-            return np.degrees([roll, pitch, yaw])
-
-        output_path = Path(f'./src/pyocamcalib/checkpoints/calibration/ocamcalib_extrinsic_{self.cam_name}.txt')
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        lines = []
-        extrinsic_idx = 0
-        for img_path, is_valid in zip(sorted(self.detections.keys()), self.valid_pattern):
-            if not is_valid:
-                continue
-            extrinsic = self.extrinsics_t[extrinsic_idx]
-            extrinsic_idx += 1
-            rotation = extrinsic[:, :3]
-            translation = extrinsic[:, -1]
-            roll, pitch, yaw = rotation_matrix_to_euler(rotation)
-
-            lines.append(f"{img_path}:\n")
-            lines.append("translation (mm)\n")
-            lines.append(f"  {translation[0]:.9g}        # trans_x\n")
-            lines.append(f"  {translation[1]:.9g}        # trans_y\n")
-            lines.append(f"  {translation[2]:.9g}        # trans_z\n")
-            lines.append("rotation (degree)\n")
-            lines.append(f"  {roll:.9g}        # roll\n")
-            lines.append(f"  {pitch:.9g}        # pitch\n")
-            lines.append(f"  {yaw:.9g}        # yaw\n\n")
-
-        with open(output_path, 'w', encoding='utf-8') as file:
-            file.writelines(lines)
-
-        logger.info(f"Extrinsic file exported to {output_path}")
 
     def find_poly_inv(self,
                       nb_sample: int = 100,

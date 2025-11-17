@@ -64,6 +64,8 @@ def get_files(path):
     all_files = []
     for ext in IMG_EXTENSIONS:
         all_files.extend(list(path.glob("*" + ext)))
+
+    print(f"Got {len(all_files)} images")
     return all_files
 
 

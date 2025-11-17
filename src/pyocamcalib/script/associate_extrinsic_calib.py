@@ -373,6 +373,29 @@ def get_ego2world(camera_params):
 
     return R_ew, t_ew
 
+
+
+def get_cam2camb():
+    """获取cam坐标到camB坐标的转换参数;
+    camB坐标系定义：
+    - 原点与cam坐标系原点重合;
+    - X = -cam.z
+    - Y = -cam.x
+    - Z = -cam.y
+    """
+    # cam -> camB: [X_B, Y_B, Z_B]^T = R_cb [X_c, Y_c, Z_c]^T
+    # 其中 X_B = -Z_c, Y_B = -X_c, Z_B = -Y_c
+    R_ccb = np.array(
+        [
+            [0.0, 0.0, -1.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    t_ccb = np.zeros(3, dtype=np.float64)
+    return R_ccb, t_ccb
+
 """
 python src/pyocamcalib/script/associate_extrinsic_calib.py ./test_images/usb_cameras_003
 """
@@ -465,6 +488,8 @@ def main(
         t_cw = -R_cw @ t_wc
         r_cw, p_cw, y_cw = rpy_from_R(R_cw)
         Rt_cw = np.hstack([R_cw, t_cw.reshape(3, 1)])
+
+
         results[key] = {
             "rms_px": float(rms_px),
             "image_path": str(img_path),
@@ -502,6 +527,8 @@ def main(
             height, width = engine.image.shape[:2]
             direct_poly = np.asarray(camera.taylor_coefficient).ravel()
             inverse_poly = np.asarray(camera.inverse_poly).ravel()
+            # revese the order of inverse_poly as the libxcam project needs
+            inverse_poly_reversed = inverse_poly[::-1]
             center_col, center_row = float(camera.distortion_center[0]), float(camera.distortion_center[1])
             stretch = np.asarray(camera.stretch_matrix, dtype=float)
             c_param = float(stretch[0, 0])
@@ -518,7 +545,7 @@ def main(
                 "\n#polynomial coefficients for the DIRECT mapping function (ocam_model.ss in MATLAB). These are used by cam2world\n\n",
                 _format_coefficients(direct_poly),
                 '#polynomial coefficients for the inverse mapping function (ocam_model.invpol in MATLAB). These are used by world2cam\n\n',
-                _format_coefficients(inverse_poly),
+                _format_coefficients(inverse_poly_reversed),
                 '\n#center: "row" and "column", starting from 0 (C convention)\n\n',
                 f"{center_row:.9g} {center_col:.9g}\n\n",
                 '#affine parameters "c", "d", "e"\n\n',
@@ -528,7 +555,10 @@ def main(
                 '#camera Intrinsic parmeters: <fx 0 cx, 0 fy cy, 0 0 1>\n\n',
                 intrinsic_matrix_line,
             ]
-            intr_path = calib_txt_dir / f"ocamcalib_intrinsic_{cam_name}.txt"
+            if cam_name == "back":
+                intr_path = calib_txt_dir / "intrinsic_camera_rear.txt"
+            else:
+                intr_path = calib_txt_dir / f"intrinsic_camera_{cam_name}.txt"
             with open(intr_path, 'w', encoding='utf-8') as f_txt:
                 f_txt.writelines(intr_lines)
         except Exception as e:
@@ -572,6 +602,19 @@ def main(
             "rpy_deg": [float(r_ec), float(p_ec), float(y_ec)],
         }
 
+        # ego -> camB: 先从 ego 到 cam，再从 cam 到 camB
+        R_ccb, t_ccb = get_cam2camb()
+        R_ecb = R_ccb @ R_ec
+        t_ecb = R_ccb @ t_ec + t_ccb
+        Rt_ecb = np.hstack([R_ecb, t_ecb.reshape(3, 1)])
+        r_ecb, p_ecb, y_ecb = rpy_from_R(R_ecb)
+
+        cam_info["ego2camB"] = {
+            "Rt": Rt_ecb.tolist(),
+            "xyz": t_ecb.tolist(),
+            "rpy_deg": [float(r_ecb), float(p_ecb), float(y_ecb)],
+        }
+
         # cam -> ego: 取 ego->cam 的逆变换
         R_ce = R_ec.T
         t_ce = -R_ce @ t_ec
@@ -584,26 +627,45 @@ def main(
             "rpy_deg": [float(r_ce), float(p_ce), float(y_ce)],
         }
 
-        # 3) cam2ego 外参 TXT（描述相机在 ego 坐标中的位姿）
+        # camB -> ego: 取 ego->camB 的逆变换
+        R_cbe = R_ecb.T
+        t_cbe = -R_cbe @ t_ecb
+        Rt_cbe = np.hstack([R_cbe, t_cbe.reshape(3, 1)])
+        r_cbe, p_cbe, y_cbe = rpy_from_R(R_cbe)
+
+        cam_info["camB2ego"] = {
+            "Rt": Rt_cbe.tolist(),
+            "xyz": t_cbe.tolist(),
+            "rpy_deg": [float(r_cbe), float(p_cbe), float(y_cbe)],
+        }
+
+        continue
+
+        # 3) camB2ego 外参 TXT（描述相机在 ego 坐标中的位姿）
         try:
             cam = cam_map[key]
             cam_name = cam.name if getattr(cam, 'name', None) else key
             img_path = cam_info.get("image_path", "")
             lines = []
-            lines.append(f"{img_path}:\n")
-            lines.append("translation (units)\n")
-            lines.append(f"  {t_ce[0]:.9g}        # trans_x\n")
-            lines.append(f"  {t_ce[1]:.9g}        # trans_y\n")
-            lines.append(f"  {t_ce[2]:.9g}        # trans_z\n")
-            lines.append("rotation (degree)\n")
-            lines.append(f"  {r_ce:.9g}        # roll\n")
-            lines.append(f"  {p_ce:.9g}        # pitch\n")
-            lines.append(f"  {y_ce:.9g}        # yaw\n\n")
-            extr_path_txt = calib_txt_dir / f"ocamcalib_extrinsic_{cam_name}.txt"
+            lines.append(f"#{img_path}:\n")
+            lines.append("#translation (units)\n")
+            lines.append(f"  {t_cbe[0]:.9g}        # trans_x\n")
+            lines.append(f"  {t_cbe[1]:.9g}        # trans_y\n")
+            lines.append(f"  {t_cbe[2]:.9g}        # trans_z\n")
+            lines.append("#rotation (degree)\n")
+            lines.append(f"  {r_cbe:.9g}        # roll\n")
+            lines.append(f"  {p_cbe:.9g}        # pitch\n")
+            lines.append(f"  {y_cbe:.9g}        # yaw\n\n")
+
+            if cam_name:
+                extr_path_txt = calib_txt_dir / f"extrinsic_camera_rear.txt"
+            else:
+                extr_path_txt = calib_txt_dir / f"extrinsic_camera_{cam_name}.txt"
             with open(extr_path_txt, 'w', encoding='utf-8') as f_txt:
                 f_txt.writelines(lines)
         except Exception as e:
-            logger.warning(f"导出 cam2ego 外参 TXT 失败 ({key}): {e}")
+            logger.warning(f"导出 camB2ego 外参 TXT 失败 ({key}): {e}")
+
 
     # 保存联合外参 JSON
     ts = time.strftime("%Y%m%d_%H%M%S")
