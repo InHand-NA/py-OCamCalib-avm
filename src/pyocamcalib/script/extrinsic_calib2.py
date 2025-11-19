@@ -465,6 +465,7 @@ def eval_extrinsic():
 
     # rays in camera coords, then rotate to world coords
     rays_cam = cam.cam2world(uv.copy())  # Nx3 unit
+    typer.echo(f"{rays_cam}")
     rays_w = rays_cam @ R_T.T  # rotate to world: v_w = R^T * v_c
 
     vz = rays_w[:, 2]
@@ -475,9 +476,16 @@ def eval_extrinsic():
     lamb[invalid] = np.nan
 
     Xw = Cw[None, :] + lamb[:, None] * rays_w  # Nx3
+    Xc = lamb[:, None] * rays_cam  # Nx3, points in camera coordinates
 
-    for i, (px, pw) in enumerate(zip(uv, Xw)):
-        typer.echo(f"[{i}] pixel=({px[0]:.2f}, {px[1]:.2f}) -> world=(X={pw[0]:.6f}, Y={pw[1]:.6f}, Z={pw[2]:.6f})")
+    for i, (px, pw, pc) in enumerate(zip(uv, Xw, Xc)):
+        typer.echo(
+            f"[{i}] pixel=({px[0]:.2f}, {px[1]:.2f}) "
+            f"-> world=(X={pw[0]:.6f}, Y={pw[1]:.6f}, Z={pw[2]:.6f})"
+        )
+        typer.echo(
+            f"      cam=(X={pc[0]:.6f}, Y={pc[1]:.6f}, Z={pc[2]:.6f})"
+        )
 
 
 """
@@ -497,7 +505,7 @@ def main(
     image_path: Path = typer.Argument(..., help="Path to the chessboard image."),
     chessboard_size_column: int = typer.Option(6, help="Number of inner corners along a column."),
     chessboard_size_row: int = typer.Option(4, help="Number of inner corners along a row."),
-    square_size: float = typer.Option(200.0, help="Size of a chessboard square (units carry over to translation)."),
+    square_size: float = typer.Option(30.0, help="Size of a chessboard square (units carry over to translation)."),
     axis_length: float = typer.Option(3.0, help="Axis length expressed in number of squares to draw."),
     output_path: Optional[Path] = typer.Option('./outputs/', help="Optional path to save the overlay image."),
     depth_prior: Optional[float] = typer.Option(None, help="Optional weak prior for tz (same units as square_size)."),
@@ -577,8 +585,8 @@ def main(
     globals()["_LAST_CAMERA"] = camera
     globals()["_LAST_IMAGE"] = my_calib_engine.image
     globals()["_LAST_EXTRINSIC"] = extrinsic_1
-    #eval_extrinsic()
-    eval_world2cam_fast()
+    eval_extrinsic()
+    #eval_world2cam_fast()
 
 
 if __name__ == "__main__":

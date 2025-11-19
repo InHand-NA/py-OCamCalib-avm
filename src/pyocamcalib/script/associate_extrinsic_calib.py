@@ -73,7 +73,7 @@ def compose_world_extrinsic(R_b_c: np.ndarray,
                             R_w_b: np.ndarray,
                             t_w_b: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
-    将“棋盘->相机”的外参转换为“世界->相机”的外参。
+    将“世界->棋盘”,“棋盘->相机”的外参转换为“世界->相机”的外参。
     """
     R_b_c = np.asarray(R_b_c, dtype=np.float64)
     t_b_c = np.asarray(t_b_c, dtype=np.float64).reshape(3)
@@ -396,6 +396,30 @@ def get_cam2camb():
     t_ccb = np.zeros(3, dtype=np.float64)
     return R_ccb, t_ccb
 
+
+def save_extrinsic_txt(calib_txt_dir, cam_name, xyz, rpy_deg):
+    """ Save extrinsic txt file
+    """
+    lines = []
+    lines.append("#translation (units)\n")
+    lines.append(f"  {xyz[0]:.9g}        # trans_x\n")
+    lines.append(f"  {xyz[1]:.9g}        # trans_y\n")
+    lines.append(f"  {xyz[2]:.9g}        # trans_z\n")
+
+    lines.append("#rotation (degree)\n")
+    lines.append(f"  {rpy_deg[0]:.9g}        # roll\n")
+    lines.append(f"  {rpy_deg[1]:.9g}        # pitch\n")
+    lines.append(f"  {rpy_deg[2]:.9g}        # yaw\n\n")
+
+    if cam_name == 'back':
+        extr_path_txt = calib_txt_dir / "extrinsic_camera_rear.txt"
+    else:
+        extr_path_txt = calib_txt_dir / f"extrinsic_camera_{cam_name}.txt"
+    with open(extr_path_txt, 'w', encoding='utf-8') as f_txt:
+        f_txt.writelines(lines)
+        print(f"Save extrinsic params at {extr_path_txt} for camera {cam_name}")
+
+
 """
 python src/pyocamcalib/script/associate_extrinsic_calib.py ./test_images/usb_cameras_003
 """
@@ -521,7 +545,8 @@ def main(
         calib_txt_dir = checkpoints_dir
         calib_txt_dir.mkdir(parents=True, exist_ok=True)
 
-        cam_name = camera.name if getattr(camera, 'name', None) else key
+        #cam_name = camera.name if getattr(camera, 'name', None) else key
+        cam_name = key
         # 1) 内参 TXT（复用 ocam 格式字段）
         try:
             height, width = engine.image.shape[:2]
@@ -561,6 +586,7 @@ def main(
                 intr_path = calib_txt_dir / f"intrinsic_camera_{cam_name}.txt"
             with open(intr_path, 'w', encoding='utf-8') as f_txt:
                 f_txt.writelines(intr_lines)
+                print(f"Save intrinsic file {intr_path} for {cam_name}")
         except Exception as e:
             logger.warning(f"导出内参 TXT 失败 ({cam_name}): {e}")
 
@@ -602,6 +628,19 @@ def main(
             "rpy_deg": [float(r_ec), float(p_ec), float(y_ec)],
         }
 
+        # cam -> ego: 取 ego->cam 的逆变换
+        R_ce = R_ec.T
+        t_ce = -R_ce @ t_ec
+        Rt_ce = np.hstack([R_ce, t_ce.reshape(3, 1)])
+        r_ce, p_ce, y_ce = rpy_from_R(R_ce)
+
+        cam_info["cam2ego"] = {
+            "Rt": Rt_ce.tolist(),
+            "xyz": t_ce.tolist(),
+            "rpy_deg": [float(r_ce), float(p_ce), float(y_ce)],
+        }
+
+        # camB(cam_world)
         # ego -> camB: 先从 ego 到 cam，再从 cam 到 camB
         R_ccb, t_ccb = get_cam2camb()
         R_ecb = R_ccb @ R_ec
@@ -613,18 +652,6 @@ def main(
             "Rt": Rt_ecb.tolist(),
             "xyz": t_ecb.tolist(),
             "rpy_deg": [float(r_ecb), float(p_ecb), float(y_ecb)],
-        }
-
-        # cam -> ego: 取 ego->cam 的逆变换
-        R_ce = R_ec.T
-        t_ce = -R_ce @ t_ec
-        Rt_ce = np.hstack([R_ce, t_ce.reshape(3, 1)])
-        r_ce, p_ce, y_ce = rpy_from_R(R_ce)
-
-        cam_info["cam2ego"] = {
-            "Rt": Rt_ce.tolist(),
-            "xyz": t_ce.tolist(),
-            "rpy_deg": [float(r_ce), float(p_ce), float(y_ce)],
         }
 
         # camB -> ego: 取 ego->camB 的逆变换
@@ -639,32 +666,11 @@ def main(
             "rpy_deg": [float(r_cbe), float(p_cbe), float(y_cbe)],
         }
 
-        continue
-
-        # 3) camB2ego 外参 TXT（描述相机在 ego 坐标中的位姿）
-        try:
-            cam = cam_map[key]
-            cam_name = cam.name if getattr(cam, 'name', None) else key
-            img_path = cam_info.get("image_path", "")
-            lines = []
-            lines.append(f"#{img_path}:\n")
-            lines.append("#translation (units)\n")
-            lines.append(f"  {t_cbe[0]:.9g}        # trans_x\n")
-            lines.append(f"  {t_cbe[1]:.9g}        # trans_y\n")
-            lines.append(f"  {t_cbe[2]:.9g}        # trans_z\n")
-            lines.append("#rotation (degree)\n")
-            lines.append(f"  {r_cbe:.9g}        # roll\n")
-            lines.append(f"  {p_cbe:.9g}        # pitch\n")
-            lines.append(f"  {y_cbe:.9g}        # yaw\n\n")
-
-            if cam_name:
-                extr_path_txt = calib_txt_dir / f"extrinsic_camera_rear.txt"
-            else:
-                extr_path_txt = calib_txt_dir / f"extrinsic_camera_{cam_name}.txt"
-            with open(extr_path_txt, 'w', encoding='utf-8') as f_txt:
-                f_txt.writelines(lines)
-        except Exception as e:
-            logger.warning(f"导出 camB2ego 外参 TXT 失败 ({key}): {e}")
+        # 3) cam2ego 外参 TXT（描述相机在 ego 坐标中的位姿）
+        print("Using cam2ego...")
+        xyz = t_ce.tolist()
+        rpy_deg = [float(r_ce), float(p_ce), float(y_ce)]
+        save_extrinsic_txt(calib_txt_dir, key, xyz=xyz, rpy_deg=rpy_deg)
 
 
     # 保存联合外参 JSON
