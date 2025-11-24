@@ -41,7 +41,16 @@ You can use it to test the project.
 
 ### Use case 1 : Automatic detection and no check 
 ```bash
-(env) zyb@zyb-Alienware-18-Area-51-AA18250:~/avm/py-OCamCalib$ python ./src/pyocamcalib/script/calibration_script.py ./test_images/fish_1 8 6  --camera-name fisheye_1
+python ./src/pyocamcalib/script/calibration_script.py ./test_images/inhandus_1 8 6  --camera-name inhandus_1 --check
+
+python ./src/pyocamcalib/script/calibration_script.py /home/zyb/avm/CameraCalibration-AVM/IntrinsicCalibration/data7 8 6  --camera-name inhandus_1 --check
+
+python ./src/pyocamcalib/script/calibration_script.py ./test_images/usb_right 8 6  --camera-name usb_right
+python ./src/pyocamcalib/script/calibration_script.py ./test_images/usb_back 8 6  --camera-name usb_back
+python ./src/pyocamcalib/script/calibration_script.py ./test_images/usb_left 8 6  --camera-name usb_left
+
+
+python ./src/pyocamcalib/script/calibration_script.py ./test_images/usb_left 6 8  --camera-name usb_left2
 ```
 
 ### Use case 2 : Automatic detection and check 
@@ -161,6 +170,10 @@ That why I prefer to talk about Image projection CONVERSION than "UNDISTORTION" 
 
 ```commandline
 python src/pyocamcalib/script/projection_conversion_script.py ./test_images/fish_1/Fisheye1_12.jpg ./src/pyocamcalib/checkpoints/calibration/calibration_fisheye_1_07112025_133715.json 160 720 1280
+```
+
+```bash
+python src/pyocamcalib/script/projection_conversion_script.py ./test_images/inhandus_1/fe1_1.jpg src/pyocamcalib/checkpoints/calibration/calibration_inhandus_1_10112025_113611.json 160 1080 1920
 ```
 
 
