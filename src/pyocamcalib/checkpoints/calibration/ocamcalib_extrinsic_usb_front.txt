@@ -1,0 +1,10 @@
+outputs/captures/20251114_144111/front_20251114_144111.jpg:
+translation (units)
+  -68.9923356        # trans_x
+  31.1392341        # trans_y
+  354.270548        # trans_z
+rotation (degree)
+  -57.9644002        # roll
+  0.625192966        # pitch
+  0.724093151        # yaw
+

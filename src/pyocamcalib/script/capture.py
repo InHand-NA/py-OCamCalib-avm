@@ -71,12 +71,12 @@ def _save_group(frames: Dict[str, np.ndarray], out_dir: Path) -> List[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     saved: List[Path] = []
-    order = ["front", "right", "back", "left"]
+    order = ["front", "right", "rear", "left"]
     for name in order:
         if name not in frames or frames[name] is None:
             logger.warning(f"No frame for {name}; skipping save")
             continue
-        path = out_dir / f"{name}_{ts}.jpg"
+        path = out_dir / f"{name}.jpg"
         cv.imwrite(str(path), frames[name])
         saved.append(path)
     return saved
@@ -103,10 +103,10 @@ def _notify_save(win_name: str, out_dir: Path, ok: bool) -> None:
     cv.destroyWindow(name)
 
 def main(
-    front: str = typer.Option("/dev/video10", help="Front camera device (path or index)"),
-    right: str = typer.Option("/dev/video12", help="Right camera device (path or index)"),
-    back: str = typer.Option("/dev/video14", help="Back camera device (path or index)"),
-    left: str = typer.Option("/dev/video16", help="Left camera device (path or index)"),
+    front: str = typer.Option("/dev/video4", help="Front camera device (path or index)"),
+    right: str = typer.Option("/dev/video6", help="Right camera device (path or index)"),
+    rear: str = typer.Option("/dev/video8", help="Rear camera device (path or index)"),
+    left: str = typer.Option("/dev/video10", help="Left camera device (path or index)"),
     width: int = typer.Option(1280, help="Per-camera capture width"),
     height: int = typer.Option(720, help="Per-camera capture height"),
     fps: int = typer.Option(30, help="Per-camera FPS"),
@@ -116,7 +116,7 @@ def main(
     devices: Dict[str, str | int] = {
         "front": _as_device(front),
         "right": _as_device(right),
-        "back": _as_device(back),
+        "rear": _as_device(rear),
         "left": _as_device(left),
     }
 
@@ -160,7 +160,7 @@ def main(
             frames: Dict[str, np.ndarray] = {
                 "front": blank_tile.copy(),
                 "right": blank_tile.copy(),
-                "back": blank_tile.copy(),
+                "rear": blank_tile.copy(),
                 "left": blank_tile.copy(),
             }
             for name, cap in caps.items():
@@ -175,7 +175,7 @@ def main(
                 frames[name] = _ensure_size(frm if ok else None, tile_w, tile_h)
                 frames[name] = _label_tile(frames[name], name)
 
-            grid = _make_grid(frames["front"], frames["right"], frames["back"], frames["left"])
+            grid = _make_grid(frames["front"], frames["right"], frames["rear"], frames["left"])
 
             # Draw capture button on grid
             gh, gw = grid.shape[:2]
@@ -201,7 +201,7 @@ def main(
 
             if capture_request["flag"]:
                 # Capture one fresh frame from each camera in order and save
-                order = ["front", "right", "back", "left"]
+                order = ["front", "right", "rear", "left"]
                 group_dir = output_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
                 fresh: Dict[str, np.ndarray] = {}
                 for name in order:
