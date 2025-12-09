@@ -640,31 +640,34 @@ def main(
             "rpy_deg": [float(r_ce), float(p_ce), float(y_ce)],
         }
 
-        # camB(cam_world)
-        # ego -> camB: 先从 ego 到 cam，再从 cam 到 camB
-        R_ccb, t_ccb = get_cam2camb()
-        R_ecb = R_ccb @ R_ec
-        t_ecb = R_ccb @ t_ec + t_ccb
-        Rt_ecb = np.hstack([R_ecb, t_ecb.reshape(3, 1)])
-        r_ecb, p_ecb, y_ecb = rpy_from_R(R_ecb)
+        # 不需要CamB坐标系
+        calc_camb = False
+        if (calc_camb):
+            # camB(cam_world)
+            # ego -> camB: 先从 ego 到 cam，再从 cam 到 camB
+            R_ccb, t_ccb = get_cam2camb()
+            R_ecb = R_ccb @ R_ec
+            t_ecb = R_ccb @ t_ec + t_ccb
+            Rt_ecb = np.hstack([R_ecb, t_ecb.reshape(3, 1)])
+            r_ecb, p_ecb, y_ecb = rpy_from_R(R_ecb)
 
-        cam_info["ego2camB"] = {
-            "Rt": Rt_ecb.tolist(),
-            "xyz": t_ecb.tolist(),
-            "rpy_deg": [float(r_ecb), float(p_ecb), float(y_ecb)],
-        }
+            cam_info["ego2camB"] = {
+                "Rt": Rt_ecb.tolist(),
+                "xyz": t_ecb.tolist(),
+                "rpy_deg": [float(r_ecb), float(p_ecb), float(y_ecb)],
+            }
 
-        # camB -> ego: 取 ego->camB 的逆变换
-        R_cbe = R_ecb.T
-        t_cbe = -R_cbe @ t_ecb
-        Rt_cbe = np.hstack([R_cbe, t_cbe.reshape(3, 1)])
-        r_cbe, p_cbe, y_cbe = rpy_from_R(R_cbe)
+            # camB -> ego: 取 ego->camB 的逆变换
+            R_cbe = R_ecb.T
+            t_cbe = -R_cbe @ t_ecb
+            Rt_cbe = np.hstack([R_cbe, t_cbe.reshape(3, 1)])
+            r_cbe, p_cbe, y_cbe = rpy_from_R(R_cbe)
 
-        cam_info["camB2ego"] = {
-            "Rt": Rt_cbe.tolist(),
-            "xyz": t_cbe.tolist(),
-            "rpy_deg": [float(r_cbe), float(p_cbe), float(y_cbe)],
-        }
+            cam_info["camB2ego"] = {
+                "Rt": Rt_cbe.tolist(),
+                "xyz": t_cbe.tolist(),
+                "rpy_deg": [float(r_cbe), float(p_cbe), float(y_cbe)],
+            }
 
         # 3) cam2ego 外参 TXT（描述相机在 ego 坐标中的位姿）
         print("Using cam2ego...")
