@@ -1,10 +1,10 @@
 """
-功能：四相机（front/right/back/left）联合外参标定（AVM场景）。
+功能：四相机（front/right/rear/left）联合外参标定（AVM场景）。
 
 设计要点：
 - 世界坐标系与 front 相机看到的棋盘格坐标系完全一致（即 front 棋盘格为世界坐标原点/朝向）。
-- 其余 3 个棋盘（right/back/left）在世界坐标系下的平移由程序预定义，
-  姿态由程序按顺时针每次绕 Z 轴旋转 90° 设定：front=0°，right=-90°，back=-180°，left=-270°。
+- 其余 3 个棋盘（right/rear/left）在世界坐标系下的平移由程序预定义，
+  姿态由程序按顺时针每次绕 Z 轴旋转 90° 设定：front=0°，right=-90°，rear=-180°，left=-270°。
 - 对每个相机，先在各自图像中检测棋盘角点，估计“棋盘坐标系 -> 相机坐标系”的外参 [R|t]，
   再结合“棋盘坐标系 -> 世界坐标系”固定变换，转换为“世界坐标系 -> 相机坐标系”的外参 [R|t]。
 
@@ -29,9 +29,9 @@ from loguru import logger
 from pyocamcalib.modelling.camera import Camera
 from pyocamcalib.script.extrinsic_calib2 import ExtCalibrationEngine
 
-# 代码内预定义：right/back/left 棋盘原点在 front-世界坐标中的 (x, y)
+# 代码内预定义：right/rear/left 棋盘原点在 front-世界坐标中的 (x, y)
 DEFAULT_RIGHT_XY = (317, 315)
-DEFAULT_BACK_XY = (150, 785)
+DEFAULT_REAR_XY = (150, 785)
 DEFAULT_LEFT_XY = (-163, 465)
 
 app = typer.Typer(help="四相机联合外参标定（AVM）")
@@ -212,7 +212,7 @@ def _resolve_calibration_files(calib_dir: Optional[Path]) -> Dict[str, Path]:
     """解析/匹配四路相机内参文件路径。
 
     约定：目录模式下优先寻找固定命名文件：intrinsic_front.json、intrinsic_right.json、
-    intrinsic_back.json、intrinsic_left.json；若不存在，再回退到包含关键字 front/right/back/left 的任意 JSON。
+    intrinsic_rear.json、intrinsic_left.json；若不存在，再回退到包含关键字 front/right/rear/left 的任意 JSON。
     若通过参数分别指定四个 JSON，则直接使用指定路径。
     """
     def find_in_dir(d: Path, key: str) -> Optional[Path]:
@@ -230,14 +230,14 @@ def _resolve_calibration_files(calib_dir: Optional[Path]) -> Dict[str, Path]:
         out = {
             "front": find_in_dir(d, "front"),
             "right": find_in_dir(d, "right"),
-            "back": find_in_dir(d, "back"),
+            "rear": find_in_dir(d, "rear"),
             "left": find_in_dir(d, "left"),
         }
         missing = [k for k, v in out.items() if v is None]
         if missing:
             raise typer.BadParameter(
                 f"在目录 {calib_dir} 下未找到如下相机的 JSON: {missing}；"
-                f"请按命名约定提供 intrinsic_<front|right|back|left>.json 或使用各自 --calib-<pos> 指定"
+                f"请按命名约定提供 intrinsic_<front|right|rear|left>.json 或使用各自 --calib-<pos> 指定"
             )
     else:
         raise typer.BadParameter("需指定 --calib-dir")
@@ -250,62 +250,62 @@ def _resolve_calibration_files(calib_dir: Optional[Path]) -> Dict[str, Path]:
 
 def _default_world2boards(
     right_xy: Optional[Tuple[float, float]] = None,
-    back_xy: Optional[Tuple[float, float]] = None,
+    rear_xy: Optional[Tuple[float, float]] = None,
     left_xy: Optional[Tuple[float, float]] = None,
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """
     生成世界坐标系到当前棋盘坐标系的变换矩阵。所有坐标系都采用右手坐标系。
     - front棋盘坐标系： 与世界坐标系姿态完全重合。
     - right棋盘坐标系： 原点在世界坐标系的位置为right_xy, z=0. 方向绕Z轴旋转90度。
-    - back棋盘坐标系： 原点在世界坐标系的位置为back_xy, z=0. 方向绕Z轴旋转180度。
+    - rear棋盘坐标系： 原点在世界坐标系的位置为rear_xy, z=0. 方向绕Z轴旋转180度。
     - left棋盘坐标系： 原点在世界坐标系的位置为left_xy, z=0. 方向绕Z轴旋转270度。
 
     返回值实例:
     result = {
     "front": [R, t],
     "right": [R, t],
-    "back": [R, t],
+    "rear": [R, t],
     "left": [R, t],
     }
     """
     rx, ry = right_xy if right_xy is not None else DEFAULT_RIGHT_XY
-    bx, by = back_xy if back_xy is not None else DEFAULT_BACK_XY
+    rear_x, rear_y = rear_xy if rear_xy is not None else DEFAULT_REAR_XY
     lx, ly = left_xy if left_xy is not None else DEFAULT_LEFT_XY
 
-    # 世界->棋盘 的旋转：front=0°, right=-90°, back=-180°, left=-270°（顺时针棋盘相对世界为负角，逆变换取正角）
+    # 世界->棋盘 的旋转：front=0°, right=-90°, rear=-180°, left=-270°（顺时针棋盘相对世界为负角，逆变换取正角）
     R_w_f = np.eye(3, dtype=np.float64)
     R_w_r = rotz(-90.0)
-    R_w_ba = rotz(-180.0)
+    R_w_rear = rotz(-180.0)
     R_w_l = rotz(-270.0)
 
     # 平移：若棋盘原点在世界坐标为 p_w，则 x_b = R x_w + t，需满足 x_b=0 当 x_w=p_w -> t = -R p_w
     p_w_f = np.array([0.0, 0.0, 0.0], dtype=np.float64)
     p_w_r = np.array([float(rx), float(ry), 0.0], dtype=np.float64)
-    p_w_b = np.array([float(bx), float(by), 0.0], dtype=np.float64)
+    p_w_rear = np.array([float(rear_x), float(rear_y), 0.0], dtype=np.float64)
     p_w_l = np.array([float(lx), float(ly), 0.0], dtype=np.float64)
 
     t_w_f = -R_w_f @ p_w_f
     t_w_r = -R_w_r @ p_w_r
-    t_w_b = -R_w_ba @ p_w_b
+    t_w_rear = -R_w_rear @ p_w_rear
     t_w_l = -R_w_l @ p_w_l
 
     return {
         "front": (R_w_f, t_w_f),
         "right": (R_w_r, t_w_r),
-        "back": (R_w_ba, t_w_b),
+        "rear": (R_w_rear, t_w_rear),
         "left": (R_w_l, t_w_l),
     }
 
 
 def _resolve_image_files(images_dir: Path) -> Dict[str, Path]:
-    """从目录中解析 front/right/back/left 的棋盘图像路径（.jpg）。
+    """从目录中解析 front/right/rear/left 的棋盘图像路径（.jpg）。
 
-    规则：文件名以 front/right/back/left 开头，后缀为 .jpg（不区分大小写）。
+    规则：文件名以 front/right/rear/left 开头，后缀为 .jpg（不区分大小写）。
     同一前缀若匹配到多张，取字典序第一张；若缺失则报错。
     """
     if not images_dir.is_dir():
         raise typer.BadParameter(f"图像目录不存在: {images_dir}")
-    keys = ["front", "right", "back", "left"]
+    keys = ["front", "right", "rear", "left"]
     out: Dict[str, Path] = {}
     files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.JPG")))
     name_map = {}
@@ -327,7 +327,7 @@ def get_camera_center(camera_params) -> Tuple[float, float, float]:
     期望输入格式与本脚本导出的联合外参 JSON 一致：
 
     - ``camera_params`` 可以是完整 JSON 字典，包含 ``"cameras"`` 键；
-      也可以直接是 ``{front/right/back/left: {...}}`` 的相机字典。
+      也可以直接是 ``{front/right/rear/left: {...}}`` 的相机字典。
     - 每个相机条目应包含 ``"cam2world"`` 子字典，且其中 ``"xyz"`` 为长度为 3
       的可迭代对象，对应相机在世界坐标中的平移 ``(x, y, z)``。
 
@@ -340,11 +340,11 @@ def get_camera_center(camera_params) -> Tuple[float, float, float]:
     # 收集每个相机在世界坐标系下的 (x, y)
     front_xyz = cams["front"]["cam2world"]["xyz"]
     right_xyz = cams["right"]["cam2world"]["xyz"]
-    back_xyz = cams["back"]["cam2world"]["xyz"]
+    rear_xyz = cams["rear"]["cam2world"]["xyz"]
     left_xyz = cams["left"]["cam2world"]["xyz"]
 
     center_x = (right_xyz[0] + left_xyz[0]) / 2.0
-    center_y = (front_xyz[1] + back_xyz[1]) / 2.0
+    center_y = (front_xyz[1] + rear_xyz[1]) / 2.0
     center_z = 0.0
     return float(center_x), float(center_y), float(center_z)
 
@@ -411,10 +411,7 @@ def save_extrinsic_txt(calib_txt_dir, cam_name, xyz, rpy_deg):
     lines.append(f"  {rpy_deg[1]:.9g}        # pitch\n")
     lines.append(f"  {rpy_deg[2]:.9g}        # yaw\n\n")
 
-    if cam_name == 'back':
-        extr_path_txt = calib_txt_dir / "extrinsic_camera_rear.txt"
-    else:
-        extr_path_txt = calib_txt_dir / f"extrinsic_camera_{cam_name}.txt"
+    extr_path_txt = calib_txt_dir / f"extrinsic_camera_{cam_name}.txt"
     with open(extr_path_txt, 'w', encoding='utf-8') as f_txt:
         f_txt.writelines(lines)
         print(f"Save extrinsic params at {extr_path_txt} for camera {cam_name}")
@@ -426,9 +423,9 @@ python src/pyocamcalib/script/associate_extrinsic_calib.py ./test_images/usb_cam
 @app.command()
 def main(
     # 内参：支持目录匹配或分别指定
-    calib_dir: Optional[Path] = typer.Option("src/pyocamcalib/checkpoints/usb_cameras", help="包含四路相机内参 JSON 的目录（按 front/right/back/left 关键字匹配）"),
-    # 图像：提供包含四张图像的目录（文件名以 front/right/back/left 开头，并以 .jpg 结尾）
-    images_dir: Path = typer.Argument(..., help="包含四张图像的目录（front/right/back/left*.jpg）"),
+    calib_dir: Optional[Path] = typer.Option("src/pyocamcalib/checkpoints/usb_cameras", help="包含四路相机内参 JSON 的目录（按 front/right/rear/left 关键字匹配）"),
+    # 图像：提供包含四张图像的目录（文件名以 front/right/rear/left 开头，并以 .jpg 结尾）
+    images_dir: Path = typer.Argument(..., help="包含四张图像的目录（front/right/rear/left*.jpg）"),
 
     # 棋盘参数
     chessboard_size_column: int = typer.Option(6, help="棋盘内角点沿X方向个数"),
@@ -463,7 +460,7 @@ def main(
     # 预定义“世界->棋盘”刚体变换（R_wb, t_wb）
     Twb = _default_world2boards(
         right_xy=DEFAULT_RIGHT_XY,
-        back_xy=DEFAULT_BACK_XY,
+        rear_xy=DEFAULT_REAR_XY,
         left_xy=DEFAULT_LEFT_XY
     )
 
@@ -472,7 +469,7 @@ def main(
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
-    for key in ("front", "right", "back", "left"):
+    for key in ("front", "right", "rear", "left"):
         print(f"Calib {key}")
         img_path = image_map[key]
         if not Path(img_path).is_file():
@@ -580,10 +577,7 @@ def main(
                 '#camera Intrinsic parmeters: <fx 0 cx, 0 fy cy, 0 0 1>\n\n',
                 intrinsic_matrix_line,
             ]
-            if cam_name == "back":
-                intr_path = calib_txt_dir / "intrinsic_camera_rear.txt"
-            else:
-                intr_path = calib_txt_dir / f"intrinsic_camera_{cam_name}.txt"
+            intr_path = calib_txt_dir / f"intrinsic_camera_{cam_name}.txt"
             with open(intr_path, 'w', encoding='utf-8') as f_txt:
                 f_txt.writelines(intr_lines)
                 print(f"Save intrinsic file {intr_path} for {cam_name}")
@@ -596,7 +590,7 @@ def main(
     if show:
         logger.info("按任意键关闭所有窗口...")
         cv.waitKey(0)
-        for key in ("front", "right", "back", "left"):
+        for key in ("front", "right", "rear", "left"):
             try:
                 cv.destroyWindow(f"{key}-board")
             except Exception:
@@ -684,7 +678,7 @@ def main(
             "square_size": float(square_size),
             "chessboard_size": chessboard_size,
             "world2board": {
-                k: {"R_wb": Twb[k][0].tolist(), "t_wb": Twb[k][1].tolist()} for k in ("front", "right", "back", "left")
+                k: {"R_wb": Twb[k][0].tolist(), "t_wb": Twb[k][1].tolist()} for k in ("front", "right", "rear", "left")
             },
             "ego2world": {
                 "R_ew": R_ew.tolist(),
